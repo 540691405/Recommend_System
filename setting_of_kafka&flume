@@ -1,0 +1,41 @@
+启动zookeeper
+./zkServer.sh start 
+
+(使用单节点单broker)
+启动kafka 
+kafka-server-start.sh $KAFKA_HOME/config/server.properties
+
+我创建topic
+kafka-topics.sh --create --zookeeper Machine-zzh:2181 --replication-factor 1 --partitions 1 --topic TencentRec
+
+查看topic信息
+kafka-topics.sh --list --zookeeper Machine-zzh:2181
+
+启动flume 的两个agent :
+（1）先启动avro source 的
+（2）再启动avro sink 的
+
+先启动 avro-memory-kafka (先从avro端口监听)
+flume-ng agent \
+--name avro-memory-kafka \
+--conf $FLUME_HOME/conf \
+--conf-file /home/zzh/zzh/Program/Recommend_System/avro-memory-kafka.conf \
+-Dflume.root.logger=INFO,console
+
+接着启动：
+exec-memory-avro
+
+flume-ng agent \
+--name exec-memory-avro \
+--conf $FLUME_HOME/conf \
+--conf-file /home/zzh/zzh/Program/Recommend_System/exec-memory-avro.conf \
+-Dflume.root.logger=INFO,console
+
+
+接着启动kafka消费者(测试才启动)
+kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic TencentRec
+
+接着改变日志看看能否接受(注意,命令(tail -F .../*.log)只能监听启动命令时已经有的文件,新创建的文件不能监听(*被转换成所以现有的))
+echo suck >> data.log
+
+
