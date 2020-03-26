@@ -4,11 +4,12 @@ from pyspark.sql.window import Window
 from pyspark.sql import Row, functions
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import udf
-from pyspark.sql.types import BooleanType, IntegerType, DoubleType, NullType
+from pyspark.sql.types import BooleanType, IntegerType, NullType, FloatType
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
 
 import time
+import math
 from ItemCF import data_processing_utils
 
 import data_processing_utils
@@ -43,6 +44,7 @@ def get_matrix_of_similarity(spark: SparkSession, ratings_df: DataFrame):
     item_count_df = ratings_df.groupBy('item').sum('rating').toDF('item', 'item_count')
     # 计算出每个 item count
     item_count_df.persist()
+
     # 以后要用，所以持久化
     # print('this is item_count_df')
     # item_count_df.show()
@@ -62,19 +64,28 @@ def get_matrix_of_similarity(spark: SparkSession, ratings_df: DataFrame):
         .join(ratings_df.toDF('user', 'item_q', 'rating_q'), 'user') \
         .filter('item_p != item_q') \
         .withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')).select('user', 'item_p', 'item_q', 'co_rating')
-    # co_rating_df=co_rating_df.withColumn('co_rating',co_rating_udf('rating_p','rating_q')).select('user','item_p','item_q','co_rating')
     # print('this is co_rating_df')
     # co_rating_df.show()
 
-    pair_count_df = co_rating_df.groupBy('item_p', 'item_q').sum('co_rating').toDF('item_p', 'item_q', 'pair_count')
-    # pair count of item p
+    pair_count_df = co_rating_df.groupBy('item_p', 'item_q') \
+        .agg({'co_rating': 'sum', '*': 'count'}) \
+        .toDF('item_p', 'item_q', 'nij', 'pair_count')
+    # 给每个pair count 来agg count，用来记录n来realtime purning
     pair_count_df.persist()
     # # 由于后面有用，所以持久化
-    # print('this is pair_count_df')
-    # pair_count_df.show()
+    print('this is pair_count_df')
+    pair_count_df.show(5)
+    # pair_count_df = co_rating_df.groupBy('item_p', 'item_q').sum('co_rating').toDF('item_p', 'item_q', 'pair_count')
+    # # pair count of item p
+    # pair_count_df.persist()
+    # # # 由于后面有用，所以持久化
+    # # print('this is pair_count_df')
+    # # pair_count_df.show()
 
     # TODO 计算sim(p,q)
-    sim_df = pair_count_df.join(item_count_df.toDF('item_p', 'item_count_p'), 'item_p') \
+
+    sim_df = pair_count_df.select('item_p', 'item_q', 'pair_count') \
+        .join(item_count_df.toDF('item_p', 'item_count_p'), 'item_p') \
         .join(item_count_df.toDF('item_q', 'item_count_q'), 'item_q')
     # 得到item p and item q 's itemcont and pair count together
 
@@ -96,6 +107,9 @@ def get_topk_similarity(sim_df: DataFrame, k: int):
     :param k:  top k
     :return: top k sorted similarity of item p
     """
+
+    #################??
+    sim_df = sim_df.select('item_p', 'item_q', 'similarity')
 
     topk_sim_df = sim_df.withColumn('rank', functions.row_number().over(
         Window.partitionBy('item_p').orderBy(functions.desc('similarity'))))
@@ -774,15 +788,15 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
 
         co_rating_delta_newold_df = ratinglog_df.toDF('user', 'item_p', 'rating_p') \
             .join(user_history_df.toDF('user', 'item_q', 'rating_q'), 'user') \
-            .withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')).select('user', 'item_p', 'item_q',
-                                                                                   'co_rating')
+            .withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')) \
+            .select('user', 'item_p', 'item_q', 'co_rating')
         # # 计算corating(p,q)  (p为新rating的item)
         # #用 new 的leftouter join 不然会失去新的值
         # print('this is new old  corating')
         # co_rating_delta_newold_df.show(5)
 
-        co_rating_delta_oldnew_df = co_rating_delta_newold_df.toDF('user', 'item_q', 'item_p', 'co_rating').select(
-            'user', 'item_p', 'item_q', 'co_rating')
+        co_rating_delta_oldnew_df = co_rating_delta_newold_df.toDF('user', 'item_q', 'item_p', 'co_rating') \
+            .select('user', 'item_p', 'item_q', 'co_rating')
         # # 计算corating(p,q)  (p为历史的item)
         # # # 为了union 的时候对应位置union ,所以要改列位置
         # print('this is old new  corating')
@@ -791,14 +805,14 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
         co_rating_delta_newnew_df = ratinglog_df.toDF('user', 'item_p', 'rating_p') \
             .join(ratinglog_df.toDF('user', 'item_q', 'rating_q'), 'user') \
             .filter('item_p != item_q') \
-            .withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')).select('user', 'item_p', 'item_q',
-                                                                                   'co_rating')
+            .withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')) \
+            .select('user', 'item_p', 'item_q', 'co_rating')
         # # 计算corating(p,q) (p,q都为新rating 的item
         # print('this is new new  corating')
         # co_rating_delta_newnew_df.show(5)
         #
-        co_rating_delta = co_rating_delta_newold_df.union(co_rating_delta_oldnew_df).union(
-            co_rating_delta_newnew_df)
+        co_rating_delta = co_rating_delta_newold_df.union(co_rating_delta_oldnew_df) \
+            .union(co_rating_delta_newnew_df)
 
         # # union操作和集合的并集并不等价，因为它不会去除重复数据。
         # # union函数并不是按照列名和并得，而是按照位置合并的。即DataFrame的列名可以不相同，但对应位置的列将合并在一起。
@@ -820,8 +834,9 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
         update_udf = udf(lambda x, y: update_fun(x, y), IntegerType())
 
         item_count_df = item_count_df.join(item_count_deltadf.toDF('item', 'delta'), 'item', 'full_outer') \
-            .withColumn('new_itemcount', update_udf('item_count', 'delta')).select('item', 'new_itemcount').toDF(
-            'item', 'item_count')
+            .withColumn('new_itemcount', update_udf('item_count', 'delta')) \
+            .select('item', 'new_itemcount') \
+            .toDF('item', 'item_count')
         # #add delta to old itemcount
         print('this is updated item_count_df')
         item_count_df.show(5)
@@ -830,13 +845,13 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
 
         # TODO : update pair count
 
-        deltapair_count_df = co_rating_delta.groupBy('item_p', 'item_q').sum('co_rating').toDF('item_p', 'item_q',
-                                                                                               'delta')
+        deltapair_count_df = co_rating_delta.groupBy('item_p', 'item_q').sum('co_rating') \
+            .toDF('item_p', 'item_q', 'delta')
+
         pair_count_df = pair_count_df.join(deltapair_count_df, ['item_p', 'item_q'], 'full_outer') \
-            .withColumn('new_paircount', update_udf('pair_count', 'delta')).select('item_p', 'item_q',
-                                                                                   'new_paircount').toDF('item_p',
-                                                                                                         'item_q',
-                                                                                                         'pair_count')
+            .withColumn('new_paircount', update_udf('pair_count', 'delta')) \
+            .select('item_p', 'item_q', 'new_paircount') \
+            .toDF('item_p', 'item_q', 'pair_count')
         ## add delta to old paircount
         # temppair_count_df.filter(temppair_count_df['item_p']=='1193').show(100)
         # pair_count_df.filter(pair_count_df['item_p']=='1193').show(100)
@@ -865,8 +880,8 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
 
         # # TODO recommend n for user use top k
         topk_sim_df = get_topk_similarity(sim_df, k=k)
-        # user_interest_df = recommend_N_for_user(user_history_df, topk_sim_df, N)
-        user_interest_df = recommend_N_for_user(ratinglog_df, topk_sim_df, N)
+        user_interest_df = recommend_N_for_user(user_history_df, topk_sim_df, N)
+        # user_interest_df = recommend_N_for_user(ratinglog_df, topk_sim_df, N)
         user_interest_df.persist()
 
         endforcal = time.time()
@@ -920,6 +935,287 @@ def incremental_update_fun(rdd: RDD, accum: Accumulator, k: int, N: int, typestr
         pass
 
 
+def incremental_update_fun_withpurning(rdd: RDD, accum: Accumulator, k: int, N: int, delta: float, typestr: str):
+    """
+    for each batch rdd of Dstream to incremental update the similarity
+    :param rdd: each batch rdd of Dstream
+    :param accum:  accumulator of sc to register the file name num
+    :param k: top k simliarity
+    :param N: recommend N
+    :return:
+    """
+
+    if rdd.isEmpty() == False:
+        start_time = time.time()
+        # 计时器
+
+        # 记录文件名累加器
+        oldacc_num_str, newacc_num_str = refresh_accum(accum)
+
+        # read old table
+        if int(accum.value) == 1:
+            # if first run ,read from MySQL
+            print("reading from MySQL############################################################################")
+            user_history_df = read_from_MySQL(spark, 'user_history_df')
+            item_count_df = read_from_MySQL(spark, 'item_count_df')
+            pair_count_df = read_from_MySQL(spark, 'pair_count_df')
+            # sim_df = read_from_MySQL(spark, 'sim_df')
+            try:
+                Li_df = read_from_MySQL(spark, 'tempLi_df')
+            except:
+                Li_df = pair_count_df.select('item_p', 'item_q').filter(pair_count_df['item_p'].isNull())
+
+            print(
+                "reading from MySQL over ############################################################################")
+        else:
+            # # not first run ,read from other file such as parquet with old num name file
+            if typestr == 'redis':
+                print(
+                    "reading from Redis############################################################################")
+                user_history_df = read_from_redis(spark, 'tempuser_history_df' + oldacc_num_str)
+                item_count_df = read_from_redis(spark, 'tempitem_count_df' + oldacc_num_str)
+                pair_count_df = read_from_redis(spark, 'temppair_count_df' + oldacc_num_str)
+                # sim_df = read_from_redis(spark, 'tempsim_df' + oldacc_num_str)
+                Li_df = read_from_redis(spark, 'tempLi_df' + oldacc_num_str)
+                print(
+                    "reading from Redis over ############################################################################")
+            elif typestr == 'parquet':
+                print(
+                    "reading from parquet############################################################################")
+                user_history_df = read_from_parquet(spark, 'tempuser_history_df' + oldacc_num_str)
+                item_count_df = read_from_parquet(spark, 'tempitem_count_df' + oldacc_num_str)
+                pair_count_df = read_from_parquet(spark, 'temppair_count_df' + oldacc_num_str)
+                # sim_df = read_from_parquet(spark, 'tempsim_df' + oldacc_num_str)
+                Li_df = read_from_parquet(spark, 'tempLi_df' + oldacc_num_str)
+                print(
+                    "reading from parquet over ############################################################################")
+                ##not first run ,read from other file such as redis table with old num name file
+
+        ratinglog_df = spark.createDataFrame(rdd)
+        ratinglog_df = ratinglog_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+        ratinglog_df.persist()
+        # 后面多用
+
+        # TODO 更新user history
+        user_history_df = user_history_df.union(ratinglog_df)
+        user_history_df.show(5)
+        user_history_df.persist()
+
+        # TODO 计算delta itemcount
+        item_count_deltadf = ratinglog_df.groupBy('item').sum('rating').toDF('item', 'item_count')
+
+        # 计算出每个 item count
+        # item_count_deltadf.persist()
+        # 中间结果不需要persist (后面只用了一次)
+        # print('this is item_count_deltadf')
+        # item_count_deltadf.show(5)
+
+        # TODO : update itemcount
+        def update_fun(old, delta):
+            if delta == None:
+                return old
+            elif old == None:
+                return delta
+            else:
+                return old + delta
+
+        update_udf = udf(lambda x, y: update_fun(x, y), IntegerType())
+
+        item_count_df = item_count_df.join(item_count_deltadf.toDF('item', 'delta'), 'item', 'full_outer') \
+            .withColumn('new_itemcount', update_udf('item_count', 'delta')) \
+            .select('item', 'new_itemcount') \
+            .toDF('item', 'item_count')
+        # #add delta to old itemcount
+        print('this is updated item_count_df')
+        item_count_df.show(5)
+        item_count_df.persist()
+        # need to write need persist
+
+        # # TODO realtime purning
+
+        # Li_df: item_p(i) item_q(j)
+
+        Li_now = ratinglog_df.select('item').distinct() \
+            .toDF('item_p') \
+            .join(Li_df, 'item_p')
+        # 得到所有new rating item i's Li :   rating p is new
+
+        jratedbyuser = ratinglog_df.toDF('user', 'item_p', 'rating_p') \
+            .join(user_history_df.toDF('user', 'item_q', 'rating_q'), 'user') \
+            .filter('item_p!=item_q') \
+            .select('user', 'item_p', 'item_q', 'rating_p', 'rating_q')
+        jratedbyuser.show(5)
+        # 得到每个 j rated by user u
+
+        Li = Li_now.toDF('i', 'j')
+        jnotinLi = jratedbyuser.join(Li, [jratedbyuser['item_p'] == Li['i'], jratedbyuser['item_q'] == Li['j']],
+                                     'left_outer') \
+            .filter(Li['j'].isNull()) \
+            .select('user', 'item_p', 'item_q', 'rating_p', 'rating_q')
+
+        # 用 udf 来解决 new column
+        def co_rating_fun(rating_p, rating_q):
+            if rating_p < rating_q:
+                return rating_p
+            else:
+                return rating_q
+
+        co_rating_udf = udf(lambda x, y: co_rating_fun(x, y), IntegerType())
+        # 定义udf 返回值是 int (spark 里)
+
+        co_rating_delta_ij_df = jnotinLi.withColumn('co_rating', co_rating_udf('rating_p', 'rating_q')) \
+            .select('user', 'item_p', 'item_q', 'co_rating')
+        # print('this is new old  corating')
+        # co_rating_delta_newold_df.show(5)
+
+        co_rating_delta_ji_df = co_rating_delta_ij_df.toDF('user', 'item_q', 'item_p', 'co_rating') \
+            .select('user', 'item_p', 'item_q', 'co_rating')
+
+        co_rating_delta = co_rating_delta_ij_df.union(co_rating_delta_ji_df)
+
+        # TODO : update pair count
+
+        deltapair_count_df = co_rating_delta.groupBy('item_p', 'item_q') \
+            .agg({'co_rating': 'sum', '*': 'count'}) \
+            .toDF('item_p', 'item_q', 'delta_nij', 'delta')
+
+        pair_count_df = pair_count_df.join(deltapair_count_df, ['item_p', 'item_q'], 'full_outer') \
+            .withColumn('new_paircount', update_udf('pair_count', 'delta')) \
+            .withColumn('new_nij', update_udf('nij', 'delta_nij')) \
+            .select('item_p', 'item_q', 'new_nij', 'new_paircount') \
+            .toDF('item_p', 'item_q', 'nij', 'pair_count')
+
+        ## add delta to old paircount and increment nij
+        print('this is pair_count_df')
+        pair_count_df.show(5)
+        pair_count_df.persist()
+
+        # TODO 计算new sim(p,q)
+        sim_df = pair_count_df.join(item_count_df.toDF('item_p', 'item_count_p'), 'item_p') \
+            .join(item_count_df.toDF('item_q', 'item_count_q'), 'item_q')
+        # 得到item p and item q 's itemcont and pair count together
+
+        sim_df = sim_df.withColumn('similarity',
+                                   sim_df['pair_count'] / (
+                                           (sim_df['item_count_p'] * sim_df['item_count_q']) ** 0.5)) \
+            .select('item_p', 'item_q', 'similarity', 'nij')
+        # 计算得 similarity  (由于TencentRec公式，已经范围至[0,1]
+        sim_df.persist()
+        print('this is similarity_df')
+        sim_df.show(5)
+
+        topk_sim_df = get_topk_similarity(sim_df, k=k)
+
+        # TODO 判断是否purning
+
+        # 1 get threshold t1 and t2
+
+        t1t2threshold = deltapair_count_df.join(topk_sim_df.filter(topk_sim_df['rank'] == k), 'item_p') \
+            .select('item_p', 'similarity').distinct()
+        print('this is t1t2threshold')
+        t1t2threshold.show()
+
+        def threshold(t1, t2):
+            if t1 < t2:
+                return t1
+            else:
+                return t2
+
+        threshold_udf = udf(lambda x, y: threshold(x, y), FloatType())
+
+        # 定义udf 返回值是 int (spark 里)
+
+        def epsilon_fun(n):
+            return math.sqrt(math.log(1 / delta) / (2 * n))
+
+        epsilon_udf = udf(lambda x: epsilon_fun(x), FloatType())
+
+        epsilon_df = sim_df.join(t1t2threshold.toDF('item_p', 't1'), 'item_p') \
+            .join(t1t2threshold.toDF('item_q', 't2'), 'item_q') \
+            .withColumn('threshold', threshold_udf('t1', 't2')) \
+            .withColumn('epsilon', epsilon_udf('nij')) \
+            .select('item_p','item_q','threshold','epsilon','similarity')
+        epsilon_df.show(100)
+
+        purning_df = epsilon_df.filter(epsilon_df['epsilon'] < (epsilon_df['threshold'] - epsilon_df['similarity'])) \
+            .select('item_p', 'item_q')
+        purning_df.show(5)
+
+
+        Li_df = Li_df.union(purning_df).union(purning_df.toDF('item_q', 'item_p').select('item_p', 'item_q')).distinct()
+        Li_df.persist()
+        Li_df.show()
+
+        # # TODO recommend n for user use top k
+        # 得到当前行为的用户
+        action_user_df = ratinglog_df.select('user').distinct()
+        # 过滤得到当前action 的用户的历史数据
+        action_user_df = action_user_df.join(user_history_df, 'user', 'left_outer').filter(
+            user_history_df['item'].isNotNull())
+        # 过滤出可以推荐的用户
+        # action_user_df.show()
+
+        # TODO 对新用户推荐
+        # user_interest_df = recommend_N_for_user(user_history_df, topk_sim_df, N)
+        user_interest_df = recommend_N_for_user(action_user_df, topk_sim_df, N)
+        user_interest_df.persist()
+
+        endforcal = time.time()
+        print('calculate use:')
+        print(endforcal - start_time)
+
+        # #TODO 写入文件或者库:
+        # # 写入文件/redis
+        if typestr == 'redis':
+            print("writing To Redis ############################################################################")
+            write_to_redis(spark, df=user_history_df, table='tempuser_history_df' + newacc_num_str)
+            write_to_redis(spark, df=item_count_df, table='tempitem_count_df' + newacc_num_str)
+            write_to_redis(spark, df=pair_count_df, table='temppair_count_df' + newacc_num_str)
+            # write_to_redis(spark, df=sim_df, table='tempsim_df' + newacc_num_str)
+            write_to_redis(spark, df=user_interest_df, table='tempuser_interest_df' + newacc_num_str)
+            write_to_redis(spark, df=Li_df, table='tempLi_df' + newacc_num_str)
+            print(
+                "writing To Redis over ############################################################################")
+
+
+        elif typestr == 'parquet':
+            print("writing To parquet ############################################################################")
+            write_to_parquet(spark, df=user_history_df, table='tempuser_history_df' + newacc_num_str)
+            write_to_parquet(spark, df=item_count_df, table='tempitem_count_df' + newacc_num_str)
+            write_to_parquet(spark, df=pair_count_df, table='temppair_count_df' + newacc_num_str)
+            # write_to_parquet(spark, df=sim_df, table='tempsim_df' + newacc_num_str)
+            write_to_parquet(spark, df=user_history_df, table='tempuser_interest_df' + newacc_num_str)
+            write_to_parquet(spark, df=Li_df, table='tempLi_df' + newacc_num_str)
+            print(
+                "writing To parquet over ############################################################################")
+
+        # 默认写入redis
+
+        if int(newacc_num_str) == 5:
+            # 若写入文件10次了，也写入数据库：
+            print("writing To MySQL ############################################################################")
+            write_to_MySQL(spark, df=user_history_df, table='tempuser_history_df')
+            write_to_MySQL(spark, df=item_count_df, table='tempitem_count_df')
+            write_to_MySQL(spark, df=pair_count_df, table='temppair_count_df')
+            # write_to_MySQL(spark, df=sim_df, table='tempsim_df')
+            write_to_MySQL(spark, df=user_interest_df, table='tempuser_interest_df')
+            write_to_MySQL(spark, df=Li_df, table='tempLi_df')
+            print("writing To MySQL over ############################################################################")
+
+        time.sleep(1)
+        # wait write terminal
+
+        ratinglog_df.unpersist()
+        # 级联unpersist 后面的df
+
+        end_time = time.time()
+        print('本次 Incremental Update 用了')
+        print(end_time - start_time)
+
+    else:
+        pass
+
+
 def incremental_Update_ItemCF(spark: SparkSession, interval: int, k: int, N: int, typestr: str):
     """
     get log from kafka and update the similarity
@@ -938,7 +1234,9 @@ def incremental_Update_ItemCF(spark: SparkSession, interval: int, k: int, N: int
     ratinglog_DStream = get_ratinglogDstream_from_Kafka(ssc)
     # get DStream from log
 
-    ratinglog_DStream.foreachRDD(lambda x: incremental_update_fun(rdd=x, accum=accum, k=k, N=N, typestr=typestr))
+    # ratinglog_DStream.foreachRDD(lambda x: incremental_update_fun(rdd=x, accum=accum, k=k, N=N, typestr=typestr))
+    ratinglog_DStream.foreachRDD(
+        lambda x: incremental_update_fun_withpurning(rdd=x, accum=accum, k=k, N=N, delta=0.05, typestr=typestr))
 
     ssc.start()  # Start the computation
     ssc.awaitTermination()  # Wait for the computation to terminate
@@ -1251,13 +1549,20 @@ if __name__ == '__main__':
     spark = SparkSession.builder.master('local[*]').appName('TencentRec') \
         .config("spark.redis.host", "Machine-zzh") \
         .config("spark.redis.port", "6379") \
-        .enableHiveSupport().getOrCreate()
+        .getOrCreate()
+
+    # .enableHiveSupport() \
+    # .getOrCreate()
 
     # split_data(spark, 'debug2')
 
-    # item_cf(spark,k=20)
+    # item_cf(spark, k=20)
     # streaming_recommend_only(spark, interval=100, N=10, typestr='parquet')
-    incremental_Update_ItemCF(spark, interval=50, k=20, N=10, typestr='parquet')
+
+    # r=Row(item_p=,item_q=)
+    # Li_df=
+    # Li_df = write_to_parquet(spark,df=Li_df,'tempLi_df')
+    incremental_Update_ItemCF(spark, interval=20, k=20, N=10, typestr='parquet')
 
     # streaming_calculate_similarity(spark,interval=80,k=20,N=10)
 
