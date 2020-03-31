@@ -11,7 +11,11 @@ def readfile(filename):
     return datalist
 
 
-def random_split(datalist: list, train_Ratio, test_Ratio):
+def random_split(datalist: list, train_Ratio, test_Ratio, test2_Ratio):
+    if train_Ratio + test_Ratio + test2_Ratio != 1:
+        print('wrong Ratio')
+        return 0
+
     random.shuffle(datalist)
     # 打乱list
     length = len(datalist)
@@ -21,10 +25,13 @@ def random_split(datalist: list, train_Ratio, test_Ratio):
         return [], []
     trainlist = datalist[:train_num]
     testlist = datalist[train_num:train_num + test_num]
-    return trainlist, testlist
+
+    testlist2 = datalist[train_num + test_num:]
+
+    return trainlist, testlist, testlist2
 
 
-def writefile(trainlist, trainfile, testlist, testfile):
+def writefile(trainlist, trainfile, testlist, testfile, testlist2, testfile2):
     with open(trainfile, 'w') as f:
         for item in trainlist:
             f.write(item)
@@ -33,13 +40,19 @@ def writefile(trainlist, trainfile, testlist, testfile):
         for item in testlist:
             f.write(item)
 
+    with open(testfile2, 'w') as f:
+        for item in testlist2:
+            f.write(item)
+
 
 if __name__ == '__main__':
     print('这是一个随机切分rating的程序')
     filename = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/ratings.dat'
+
     trainfile = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/train_ratings.dat'
     testfile = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/test_ratings.dat'
+    testfile2 = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/test_ratings2.dat'
 
     datalist = readfile(filename)
-    trainlist, testlist = random_split(datalist, 0.1, 0.1)
-    writefile(trainlist, trainfile, testlist, testfile)
+    trainlist, testlist, testlist2 = random_split(datalist, 0.8, 0.1, 0.1)
+    writefile(trainlist, trainfile, testlist, testfile, testlist2, testfile2)

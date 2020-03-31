@@ -4,7 +4,7 @@ from pyspark.sql.window import Window
 from pyspark.sql import functions
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import udf
-from pyspark.sql.types import IntegerType, FloatType
+from pyspark.sql.types import IntegerType, FloatType, Row
 from pyspark.streaming import StreamingContext
 from pyspark.streaming.kafka import KafkaUtils
 
@@ -31,19 +31,23 @@ def split_data(spark: SparkSession, mode: str = 'debug2'):
     filename = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/ratings.dat'
     trainfile = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/train_ratings.dat'
     testfile = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/test_ratings.dat'
+    testfile2 = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/test_ratings2.dat'
 
     datalist = random_split.readfile(filename)
 
     if mode == 'debug':
         # 用来调试模式的  划分 训练集，测试集，训练集
-        trainlist, testlist = random_split.random_split(datalist, 0.001, 0.001)
+        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 0.001, 0.001, 0.998)
     elif mode == 'debug2':
-        trainlist, testlist = random_split.random_split(datalist, 0.1, 0.1)
+        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 0.1, 0.1, 0.8)
     else:
-        trainlist, testlist = random_split.random_split(datalist, 0.8, 0.2)
+        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 0.8, 0.1, 0.1)
 
-    random_split.writefile(trainlist, trainfile, testlist, testfile)
+    random_split.writefile(trainlist, trainfile, testlist1, testfile, testlist2, testfile2)
+
     ratings_df = data_processing_utils.get_ratings_df(spark, 'file://' + trainfile)
+    test1_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile)
+    test2_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile2)
 
     # if mode == 'debug':
     #     # 用来调试模式的  划分 训练集，测试集，训练集
@@ -58,6 +62,8 @@ def split_data(spark: SparkSession, mode: str = 'debug2'):
 
     # write splited table to MySQL
     write_to_MySQL(spark, df=ratings_df, table='ratings_df')
+    write_to_MySQL(spark, df=test1_df, table='test1_df')
+    write_to_MySQL(spark, df=test2_df, table='test2_df')
 
 
 def read_from_MySQL(spark: SparkSession, table: str):
@@ -253,7 +259,7 @@ def topN_rup(rup_df: DataFrame, N: int):
         Window.partitionBy('user').orderBy(functions.desc('rup'))))
 
     # get top N rup
-    topN_rup_df = rup_df = rup_df.filter(rup_df['rank'] < N + 1).select('user', 'item', 'rank')
+    topN_rup_df = rup_df = rup_df.filter(rup_df['rank'] < N + 1).select('user', 'item', 'rup', 'rank')
     # print('this is user_rup_topN(not see)')
     # rup_df.show(5)
 
@@ -1077,6 +1083,123 @@ def cold_start_recommend(no_history_user_df: DataFrame, item_count_df: DataFrame
     # recommend for new user
 
     return cold_start_interest_df
+
+
+# Evaluation
+
+def Recall(recommend_df: DataFrame, test_df: DataFrame):
+    """
+    召回率 Recall 计算，返回值
+    :param recommend_df:
+    :param test_df:
+    :return:
+    """
+    recommend_df = recommend_df.select('user', 'item')
+    test_df = test_df.select('user', 'item')
+
+    RecommendIntersectionTestCount = float(recommend_df.join(test_df, ['user', 'item']).count())
+    TestCount = float(test_df.count())
+
+    recall = RecommendIntersectionTestCount / TestCount
+
+    return recall
+
+
+def Precision(recommend_df: DataFrame, test_df: DataFrame):
+    """
+    准确率计算 Precision 返回计算值
+    :param recommend_df:
+    :param test_df:
+    :return:
+    """
+    recommend_df = recommend_df.select('user', 'item')
+    test_df = test_df.select('user', 'item')
+
+    RecommendIntersectionTestCount = float(recommend_df.join(test_df, ['user', 'item']).count())
+    RecommendCount = float(recommend_df.count())
+
+    precision = RecommendIntersectionTestCount / RecommendCount
+
+    return precision
+
+
+def Coverage(items_df: DataFrame, recommend_df: DataFrame):
+    """
+    覆盖率 Coverage 返回值
+    :param items_df:
+    :param recommend_df:
+    :return:
+    """
+
+    I = float(items_df.count())
+    RI = float(recommend_df.select('item').distinct().count())
+
+    coverage = RI / I
+
+    return coverage
+
+
+def Popularity(itemCount_df: DataFrame, recommend_df: DataFrame):
+    """
+    计算推荐的物品的平均 itemCount 来度量流行度
+
+    :return:
+    """
+    recommend_df = recommend_df.select('user', 'item')
+    itemCount_df = itemCount_df.select('item', 'itemCount')
+
+    RI = float(recommend_df.count())
+    SumItemCount = recommend_df.join(itemCount_df, 'item') \
+        .agg({'itemCount': 'sum'}) \
+        .collect()
+
+    SumItemCount = float(SumItemCount[0])
+
+    popularity = SumItemCount / RI
+
+    # #>>> df.agg({"age": "max"}).collect()
+    #     [Row(max(age)=5)]
+
+    return popularity
+
+
+def Evaluation(spark: SparkSession, mode: str = 'ItemCF'):
+    recommend_df = read_from_MySQL(spark, 'recommend_df')
+    recommend_result = read_from_MySQL(spark, 'recommend_result')
+    items_df = data_processing_utils.get_movies_df(spark).select('MovieID').toDF('item')
+    itemCount_df = read_from_MySQL(spark, 'itemCount_df')
+
+    test1_df = read_from_MySQL(spark, 'test1_df')
+    test2_df = read_from_MySQL(spark, 'test2_df')
+
+    if mode == 'ItemCF':
+        test1_df = test1_df.union(test2_df)
+
+        recall = Recall(recommend_df=recommend_df, test_df=test1_df)
+        precision = Precision(recommend_df=recommend_df, test_df=test1_df)
+        coverage = Coverage(items_df=items_df, recommend_df=recommend_df)
+        popularity = Popularity(itemCount_df=itemCount_df, recommend_df=recommend_df)
+
+
+    elif mode == 'RealTimeRecommend':
+
+        pass
+    else:
+        print('wrong')
+        return 0
+
+    print('Recall is :')
+    print(recall)
+    print("Precision is :")
+    print(precision)
+    print('Coverage is :')
+    print(coverage)
+    print('Popularity is :')
+    print(popularity)
+
+    rowlist = [Row(recall=recall, precision=precision, coverage=coverage, popularity=popularity)]
+    row_df = spark.createDataFrame(rowlist)
+    write_to_MySQL(spark, df=row_df, table='Evaluation', mode='append')
 
 
 if __name__ == '__main__':
