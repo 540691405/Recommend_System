@@ -1,0 +1,10 @@
+show ItemCF ratings_df parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+normal ItemCF ratings_df parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+
+show RealTimeUpdateItemCF Machine-zzh:9092 parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20 50
+
+show RealTimeUpdateItemCF Machine-zzh:9092 redis Machine-zzh:6379 Machine-zzh:3306 TencentRec root 123456 10 20 50 
+
+
+show StreamingRecommend Machine-zzh:9092 parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20 50
+

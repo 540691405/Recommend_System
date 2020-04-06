@@ -27,10 +27,24 @@ def generate_log(filename, logfile):
         time.sleep(5)
         # 每几秒才有一个数据
 
+def all_log(filename, logfile):
+    datalist = []
+
+    with open(filename, 'r') as file:
+        for line in file.readlines():
+            datalist.append(line)
+
+    with open(logfilename,'a') as f:
+        for i in datalist:
+            f.write(i)
+
+
 
 if __name__ == '__main__':
     print('这是一个日志生成器')
-    filename = '/home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/test_ratings.dat'
+    filename = '/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings.dat'
     logfilename = '/home/zzh/zzh/Program/Recommend_System/logger/data.log'
 
     generate_log(filename, logfilename)
+    # all_log(filename,logfilename)
+    # all_log('/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings2.dat',logfilename)

@@ -6,27 +6,29 @@ def readfile(filename):
     with open(filename, 'r') as file:
         for line in file.readlines():
             datalist.append(line)
-    print(datalist[1])
-    print(type(datalist[1]))
+    # print(datalist[1])
+    # print(type(datalist[1]))
     return datalist
 
 
 def random_split(datalist: list, train_Ratio, test_Ratio, test2_Ratio):
-    if train_Ratio + test_Ratio + test2_Ratio != 1:
-        print('wrong Ratio')
-        return 0
+    # if train_Ratio + test_Ratio + test2_Ratio != 1:
+    #     print('wrong Ratio')
+    #     return 0
 
     random.shuffle(datalist)
     # 打乱list
     length = len(datalist)
     train_num = int(length * train_Ratio)
     test_num = int(length * test_Ratio)
+    test2_num = int(length * test2_Ratio)
+
     if length == 0 or train_num < 1 or test_num < 1:
         return [], []
     trainlist = datalist[:train_num]
     testlist = datalist[train_num:train_num + test_num]
 
-    testlist2 = datalist[train_num + test_num:]
+    testlist2 = datalist[train_num + test_num:train_num + test_num + test2_num]
 
     return trainlist, testlist, testlist2
 
