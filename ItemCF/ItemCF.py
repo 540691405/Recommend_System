@@ -36,28 +36,28 @@ def get_matrix_of_usersXitems(spark:SparkSession,ratings_df):
     # second step : filter same itemid  such as Uid , item a ,item a
     #UserID type is str
     item_item_user_df=spark.createDataFrame(user_item_rdd.map(lambda x:Row(UserID=x[0],Movie_ID_1=x[1][0],Movie_ID_2=x[1][1])))
-    item_item_user_df.show()
+    item_item_user_df.show(5)
     #这个是写明那些 item 与 item 属于哪个user 的df
 
     item_item_intersection_df=item_item_user_df.groupBy('Movie_ID_1','Movie_ID_2').count().toDF('itemi','itemj','N(i)_intersection_N(j)')
-    item_item_intersection_df.show()
+    item_item_intersection_df.show(5)
 
     item_count_df=item_item_user_df.groupBy('Movie_ID_1').count().toDF('itemi','|N(i)|')
-    item_count_df.show()
+    item_count_df.show(5)
 
     item_item_interCount_unionCount_df=item_item_intersection_df.join(item_count_df,'itemi')
-    item_item_interCount_unionCount_df.show()
+    item_item_interCount_unionCount_df.show(5)
 
     item_count_df=item_count_df.toDF('itemj','|N(j)|')
     #item_item_interCount_unionCount_df=item_item_interCount_unionCount_df.join(item_count_df,item_item_interCount_unionCount_df.itemj==item_count_df.itemj)
     item_item_interCount_unionCount_df = item_item_interCount_unionCount_df.join(item_count_df,'itemj')
-    item_item_interCount_unionCount_df.show()
+    item_item_interCount_unionCount_df.show(5)
 
     #计算相似度
     item_item_similarity_df=item_item_interCount_unionCount_df.withColumn('similarity',item_item_interCount_unionCount_df['N(i)_intersection_N(j)']/((item_item_interCount_unionCount_df['|N(i)|']*item_item_interCount_unionCount_df['|N(j)|'])**0.5))\
         .select('itemi','itemj','similarity')
-    item_item_similarity_df.show()
-    item_item_similarity_df.persist()
+    item_item_similarity_df.show(5)
+    # item_item_similarity_df.persist()
     #持久化，后面多用
 
 
@@ -72,7 +72,7 @@ def get_matrix_of_usersXitems(spark:SparkSession,ratings_df):
     item_item_similarity_df=item_item_similarity_df.withColumn('rank',functions.row_number().over(Window.partitionBy("itemi").orderBy(functions.desc('similarity'))))
     #item_item_similarity_df = item_item_similarity_df.withColumn('rank', functions.rank().over(Window.partitionBy("itemi").orderBy(functions.desc('similarity'))))
     #用row number 则是不重复rank ,rank（）则有重复rank
-    item_item_similarity_df.show()
+    item_item_similarity_df.show(5)
 
     return  item_item_similarity_df
 
@@ -107,7 +107,7 @@ def recommend_N_for_user(ratings_df:DataFrame,topk_similarity_df:DataFrame,N:int
     user_interest_topk_df=user_item_interest_df.filter(user_item_interest_df['rank'] < N + 1)
     #calculate topN command
 
-    user_interest_topk_df.show(100)
+    user_interest_topk_df.show(5)
 
     return None
 
@@ -225,8 +225,8 @@ if __name__ == '__main__':
     #get three table as spark's dataframe
     users_df=data_processing_utils.get_users_df(spark)
     movies_df=data_processing_utils.get_movies_df(spark)
-    #ratings_df=data_processing_utils.get_ratings_df(spark)
-    ratings_df=data_processing_utils.get_small_ratings_df(spark)
+    ratings_df=data_processing_utils.get_ratings_df(spark)
+    # ratings_df=data_processing_utils.get_small_ratings_df(spark)
 
     #get similarity df
     item_item_similarity_df=get_matrix_of_usersXitems(spark,ratings_df)
