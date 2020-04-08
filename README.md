@@ -16,8 +16,8 @@ RealTimeUpdatItemCF.py
   RealTimeUpdateItemCF  ： 实时更新ItemCF并用新相似度为当前行为用户推荐结果，需要先运行一次ItemCF
   
 剩余参数可以参考：
-"""
- Usage: RealTimeUpdateItemCF.py <mode> <algorithm> <pathOfRecord> <tempFileSaveMode> <tempFilePath> <MySQLPath> <MySQLDatabase> <MySQLUser> <MySQLPasswd> <N> [K] [interval] [kafkaMetadataBrokerList]
+
+       Usage: RealTimeUpdateItemCF.py <mode> <algorithm> <pathOfRecord> <tempFileSaveMode> <tempFilePath> <MySQLPath> <MySQLDatabase>           <MySQLUser> <MySQLPasswd> <N> [K] [interval] [kafkaMetadataBrokerList]
             <> : must      []:optional
 
             <mode> parameter :
@@ -54,6 +54,6 @@ RealTimeUpdatItemCF.py
             [K] optional parameter : TopK 's K
             [interval] optional parameter : interval of SparkStreaming interval
 
-            """
+
 
 
