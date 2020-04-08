@@ -1,21 +1,59 @@
 # Recommend_System
 第一个实时itemcf
 
-ItemCF文件夹里：
-ItemCF.py是将《推荐系统实践》里的ItemCF算法实现，改入口后可提交
+ItemcF文件夹下，
+RealTimeUpdatItemCF.py
+是可以提交集群运行的project
 
-TencentRec.py是参考了腾讯的论文“TencentRec: Real-time Stream Recommendation in Practice”的实时推荐算法,
-是可以实时更新相似度的算法。
-加入了real-time purning ，可是由于SparkStreaming的batch特性，
-连续的每个实时处理的real-time purning 并不适合batch处理的SparkStreaming,
-而且代码待优化，并且速度很慢
-
-
-可以更改入口并且更改Main函数选择你需要的方法：
-  TencentRec版本的ItemCF : 方法为ItemCF
-  TencentRec版本的StreamingRcommend : 方法为StreamingRecommend
-  TencentRec的Real-time update and recommend ：方法为RealTimeRecommend
-  TencentRec的Real-time with real time purning :方法为RealTimePurning 
+可以选择通过参数选择模式如下：
+  normal ：运行算法
+  show ： 仅展示每次计算中间结果和结果
+  evaluate ： 对不同K值以及你的数据集进行自动划分评估
   
+可以通过参数选择算法：
+  ItemCF ： 普通的ItemCF ，计算全体用户推荐列表
+  StreamingRecommend ： 普通使用已有Topk的结果实时为当前行为用户推荐结果，需要先运行一次ItemCF
+  RealTimeUpdateItemCF  ： 实时更新ItemCF并用新相似度为当前行为用户推荐结果，需要先运行一次ItemCF
+  
+剩余参数可以参考：
+"""
+ Usage: RealTimeUpdateItemCF.py <mode> <algorithm> <pathOfRecord> <tempFileSaveMode> <tempFilePath> <MySQLPath> <MySQLDatabase> <MySQLUser> <MySQLPasswd> <N> [K] [interval] [kafkaMetadataBrokerList]
+            <> : must      []:optional
 
-  注意：上传版本仅仅是调试入口，如果要submint到集群还是需要将入口修改成提交的模式
+            <mode> parameter :
+                normal : run normal algorithm
+                show : for just show result
+                evaluate : for evaluation algorithum
+
+
+            <algorithm>  parameter:
+                ItemCF : normal ItemCF
+                RealTimeUpdateItemCF : a spark streaming algorithum , need run after ItemCF
+                StreamingRecommend : just recommend , need run after ItemCF
+
+            <pathOfRecord> parameter :
+                if mode is ItemCF , is the table name  of userhistory in mysql
+                if mode is Recommend Only or RealTimeUpdateItemCF ,
+                    is the path of Kafka 's metadata.broker.list  such as  :   host:port
+
+            <tempFileSaveMode> parameter:
+                redis : save in redis
+                parquet : save in parquet
+
+
+            <tempFIlePath> :
+                redis : host:port
+                parquet : path
+
+            <MySQLPath>  parameter : your MySQL host:port
+            <MySQLDatabase> parameter : choose database to write
+            <MySQLUser> parameter : your MySQL user
+            <MySQLPasswd> parameter : your MySQL password
+            <N>  parameter : recommend list length
+
+            [K] optional parameter : TopK 's K
+            [interval] optional parameter : interval of SparkStreaming interval
+
+            """
+
+
