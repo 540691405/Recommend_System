@@ -3,16 +3,23 @@
 
 ItemcF文件夹下，
 RealTimeUpdatItemCF.py
-是可以提交集群运行的project
+是可以提交集群运行的文件
 
 可以选择通过参数选择模式如下：
+
   normal ：运行算法
+  
   show ： 仅展示每次计算中间结果和结果
+  
   evaluate ： 对不同K值以及你的数据集进行自动划分评估
   
+  
 可以通过参数选择算法：
+
   ItemCF ： 普通的ItemCF ，计算全体用户推荐列表
+  
   StreamingRecommend ： 普通使用已有Topk的结果实时为当前行为用户推荐结果，需要先运行一次ItemCF
+  
   RealTimeUpdateItemCF  ： 实时更新ItemCF并用新相似度为当前行为用户推荐结果，需要先运行一次ItemCF
   
 剩余参数可以参考：
