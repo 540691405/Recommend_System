@@ -3,8 +3,8 @@ import time
 import math
 import os
 
-os.environ['JAVA_HOME'] = '/usr/local/java/java-8-openjdk-amd64'
-os.environ['PYSPARK_PYTHON'] = '/home/zzh/app/python/python3.6.5/bin/python3'
+# os.environ['JAVA_HOME'] = '/usr/local/java/java-8-openjdk-amd64'
+# os.environ['PYSPARK_PYTHON'] = '/home/zzh/app/python/python3.6.5/bin/python3'
 
 from pyspark import RDD, Accumulator, SparkContext, SparkConf, StorageLevel
 from pyspark.sql.window import Window
@@ -1304,50 +1304,50 @@ class Evaluation:
         print('starting split data from recordPath Over')
 
 
-def PreProcessingDataToFileAndMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'nosplit',
-                                    test1Retio: float = 0.05, test2Retio: float = 0.05):
-    print('starting preprocessing of ratings.csv and write to MySQL')
-
-    ratingsfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/ratings.csv'
-
-    trainfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/train.csv'
-    test1file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test1.csv'
-    test2file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test2.csv'
-
-    if mode == 'nosplit':
-        ratings_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + ratingsfile)
-        myMySQLIO.write(table='ratings', df=ratings_df, mode='overwrite')
-        return
-    else:
-        datalist = PreProcessingUtils.ReadFile(ratingsfile)
-        if mode == 'debug':
-            # 用来调试模式的  划分 训练集，测试集，训练集
-            trainRatio = 0.001
-            test1Retio = 0.001
-            test2Retio = 0.001
-        elif mode == 'debug2':
-            trainRatio = 0.1
-            test1Retio = 0.1
-            test2Retio = 0.1
-
-    trainlist, test1list, test2list = PreProcessingUtils.RandomSplit(datalist, 1 - test1Retio - test2Retio, test1Retio,
-                                                                     test2Retio)
-    PreProcessingUtils.WriteFile(trainlist, trainfile, test1list, test1file, test2list, test2file)
-
-    print(trainfile)
-    train_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + trainfile)
-    test1_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test1file)
-    test2_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test2file)
-
-    myMySQLIO.write(df=train_df, table='train')
-    myMySQLIO.write(df=test1_df, table='test1')
-    myMySQLIO.write(df=test2_df, table='test2')
-
-
-def PreWriteMoviesCSVTOMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO):
-    filepath = 'file:///home/zzh/zzh/Program/Recommend_System/ml-latest-small/movies.csv'
-    items_df = PreProcessingUtils.ReadMovies_df(spark, filepath).select('item')
-    myMySQLIO.write(df=items_df, table='items', mode='overwrite')
+# def PreProcessingDataToFileAndMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'nosplit',
+#                                     test1Retio: float = 0.05, test2Retio: float = 0.05):
+#     print('starting preprocessing of ratings.csv and write to MySQL')
+#
+#     ratingsfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/ratings.csv'
+#
+#     trainfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/train.csv'
+#     test1file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test1.csv'
+#     test2file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test2.csv'
+#
+#     if mode == 'nosplit':
+#         ratings_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + ratingsfile)
+#         myMySQLIO.write(table='ratings', df=ratings_df, mode='overwrite')
+#         return
+#     else:
+#         datalist = PreProcessingUtils.ReadFile(ratingsfile)
+#         if mode == 'debug':
+#             # 用来调试模式的  划分 训练集，测试集，训练集
+#             trainRatio = 0.001
+#             test1Retio = 0.001
+#             test2Retio = 0.001
+#         elif mode == 'debug2':
+#             trainRatio = 0.1
+#             test1Retio = 0.1
+#             test2Retio = 0.1
+#
+#     trainlist, test1list, test2list = PreProcessingUtils.RandomSplit(datalist, 1 - test1Retio - test2Retio, test1Retio,
+#                                                                      test2Retio)
+#     PreProcessingUtils.WriteFile(trainlist, trainfile, test1list, test1file, test2list, test2file)
+#
+#     print(trainfile)
+#     train_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + trainfile)
+#     test1_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test1file)
+#     test2_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test2file)
+#
+#     myMySQLIO.write(df=train_df, table='train')
+#     myMySQLIO.write(df=test1_df, table='test1')
+#     myMySQLIO.write(df=test2_df, table='test2')
+#
+#
+# def PreWriteMoviesCSVTOMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO):
+#     filepath = 'file:///home/zzh/zzh/Program/Recommend_System/ml-latest-small/movies.csv'
+#     items_df = PreProcessingUtils.ReadMovies_df(spark, filepath).select('item')
+#     myMySQLIO.write(df=items_df, table='items', mode='overwrite')
 
 
 def Submit(args: sys.argv):
