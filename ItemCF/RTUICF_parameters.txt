@@ -1,0 +1,31 @@
+
+#ItemCF
+
+all calculate 
+show ItemCF ratings parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+normal ItemCF ratings parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+
+
+./bin/spark-submit \
+  --master yarn \
+  --deploy-mode client /home/zzh/zzh/Program/Recommend_System/ItemCF/RealTimeUpdateItemCF.py show ItemCF ratings parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+
+./bin/spark-submit \
+--master spark://Machine-zzh:7077 \
+/home/zzh/zzh/Program/Recommend_System/ItemCF/RealTimeUpdateItemCF.py show ItemCF ratings parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+
+
+train :
+evaluate ItemCF train parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20
+
+
+
+
+
+show RealTimeUpdateItemCF Machine-zzh:9092 parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20 50
+
+show RealTimeUpdateItemCF Machine-zzh:9092 redis Machine-zzh:6379 Machine-zzh:3306 TencentRec root 123456 10 20 50 
+
+
+show StreamingRecommend Machine-zzh:9092 parquet file:///home/zzh/zzh/Program/Recommend_System/temp_tables Machine-zzh:3306 TencentRec root 123456 10 20 50
+

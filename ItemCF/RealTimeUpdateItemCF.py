@@ -1,23 +1,22 @@
-from pyspark import RDD, Accumulator, SparkContext, SparkConf
-from pyspark.sql.window import Window
-
-from pyspark.sql import Row, functions
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import udf
-from pyspark.sql.types import IntegerType, FloatType, Row
-from pyspark.streaming import StreamingContext
-from pyspark.streaming.kafka import KafkaUtils
-
 import sys
 import time
 import math
+import os
 
-import data_processing_utils
-import random_split
+os.environ['JAVA_HOME'] = '/usr/local/java/java-8-openjdk-amd64'
+os.environ['PYSPARK_PYTHON'] = '/home/zzh/app/python/python3.6.5/bin/python3'
 
-usersfile = 'file:///home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/users.dat'
-moviesfile = 'file:///home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/movies.dat'
-ratingsfile = 'file:///home/zzh/zzh/Program/Recommend_System/ItemCF/ml-1m/ratings.dat'
+from pyspark import RDD, Accumulator, SparkContext, SparkConf, StorageLevel
+from pyspark.sql.window import Window
+
+from pyspark.sql import functions
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.functions import udf
+from pyspark.sql.types import FloatType, Row
+from pyspark.streaming import StreamingContext
+from pyspark.streaming.kafka import KafkaUtils
+
+import PreProcessingUtils
 
 
 # url = 'jdbc:mysql://Machine-zzh:3306/TencentRec?useSSL=false'
@@ -81,7 +80,7 @@ class MyParquetIO(MyIO):
     filepath: str = None
 
     def __init__(self, spark: SparkSession, filepath: str):
-        MyIO.__init__(self,spark=spark)
+        MyIO.__init__(self, spark=spark)
         self.filepath = filepath
 
     def write(self, table: str, df: DataFrame, mode: str = 'overwrite'):
@@ -123,6 +122,9 @@ class Algorithm:
     spark: SparkSession = None
     K: int = None
     N: int = None
+    result: list = None
+
+    # list of result contain of DF
 
     def __init__(self, spark: SparkSession, K=K, N=N):
         self.spark = spark
@@ -130,29 +132,28 @@ class Algorithm:
         self.N = N
 
     # 计算方法
-    def calculate(self):
+    def calculate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
         pass
 
     # 写入方法
-    def save(self):
+    def save(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
         pass
 
     # 展示方法
-    def show(self):
+    def show(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
         pass
 
     # 评估方法
-    def evaluate(self):
+    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, klist: list, testRatio: float = 0.1):
         pass
 
 
 class ItemCF(Algorithm):
-    recordPath:str=None
+    recordPath: str = None
 
-    def __init__(self, spark: SparkSession, K, N,recordPath:str):
+    def __init__(self, spark: SparkSession, K, N, recordPath: str):
         Algorithm.__init__(self, spark=spark, K=K, N=N)
-        self.recordPath=recordPath
-
+        self.recordPath = recordPath
 
     def itemCount(user_history_df: DataFrame):
         """
@@ -183,7 +184,7 @@ class ItemCF(Algorithm):
             else:
                 return rating_q
 
-        co_rating_udf = udf(lambda x, y: co_rating_fun(x, y), IntegerType())
+        co_rating_udf = udf(lambda x, y: co_rating_fun(x, y), FloatType())
         # 定义udf 返回值是 int (spark 里)
 
         co_rating_df = user_history_df.toDF('user', 'item_p', 'rating_p') \
@@ -318,23 +319,9 @@ class ItemCF(Algorithm):
 
         return recommend_df
 
-    def calculate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
-        '''
-        itemcf算法，计算出相似度和topk相似度
-                :param spark:sparkSession
-                :param k: top k
-                :param N: recommend N
-                :return:
-                '''
-        print('starting ItemCF algorithum')
-        start_time = time.time()
-
-        ## get three tables as spark's dataframe
-
-        ratings_df = myMySQLIO.read('ratings_df')
-
+    def itemCF(user_history_df: DataFrame, k: int, N: int):
         # get user history
-        user_history_df = ratings_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+        user_history_df = user_history_df.select('user', 'item', 'rating')
 
         # calculate itemCount
         itemCount_df = ItemCF.itemCount(user_history_df=user_history_df)
@@ -346,34 +333,45 @@ class ItemCF(Algorithm):
         sim_df = ItemCF.similarity(itemCount_df=itemCount_df, pairCount_df=pairCount_df)
 
         # calculate topk sim
-        topk_sim_df = ItemCF.topk_similarity(sim_df=sim_df, k=self.K)
+        topk_sim_df = ItemCF.topk_similarity(sim_df=sim_df, k=k)
 
         # recommend for user
-        recommend_df = ItemCF.recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=self.N)
+        recommend_df = ItemCF.recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=N)
 
-        # time of calculate
-        end_time = time.time()
-        print('ItemCF algorithum clculate and read  用了')
-        print(end_time - start_time)
+        return user_history_df, itemCount_df, pairCount_df, topk_sim_df, recommend_df
+
+    def calculate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
+        '''
+        itemcf算法，计算出相似度和topk相似度
+                :param spark:sparkSession
+                :param k: top k
+                :param N: recommend N
+                :return:
+                '''
+        print('starting ItemCF algorithum')
+        start_time = time.time()
+
+        # get user history
+        user_history_df = myMySQLIO.read(self.recordPath).select('user', 'item', 'rating')
+
+        user_history_df, itemCount_df, pairCount_df, topk_sim_df, recommend_df = ItemCF.itemCF(user_history_df, self.K,
+                                                                                               self.N)
 
         # write four table to MySQL
         user_history_df.persist()
-        itemCount_df.persist()
         pairCount_df.persist()
         topk_sim_df.persist()
         recommend_df.persist()
+
         myMySQLIO.write(df=user_history_df, table='user_history_df')
         myMySQLIO.write(df=itemCount_df, table='itemCount_df')
         myMySQLIO.write(df=pairCount_df, table='pairCount_df')
         myMySQLIO.write(df=topk_sim_df, table='topk_sim_df')
+        pairCount_df.unpersist()
         myMySQLIO.write(df=recommend_df, table='recommend_df')
-        # unpersist
         recommend_df.unpersist()
         topk_sim_df.unpersist()
-        pairCount_df.unpersist()
-        itemCount_df.unpersist()
         user_history_df.unpersist()
-        ratings_df.unpersist()
         # 后面的会被级联unpersist
 
         # all time
@@ -392,37 +390,12 @@ class ItemCF(Algorithm):
         print('starting ItemCF algorithum')
         start_time = time.time()
 
-        ## get three tables as spark's dataframe
-
-        ratings_df = myMySQLIO.read('ratings_df')
-
         # get user history
-        user_history_df = ratings_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+        user_history_df = myMySQLIO.read(self.recordPath).select('user', 'item', 'rating')
 
-        # calculate itemCount
-        itemCount_df = ItemCF.itemCount(user_history_df=user_history_df)
+        user_history_df, itemCount_df, pairCount_df, topk_sim_df, recommend_df = ItemCF.itemCF(user_history_df, self.K,
+                                                                                               self.N)
 
-        # calculate pairCount
-        pairCount_df = ItemCF.pairCount(user_history_df=user_history_df)
-
-        # calculate sim
-        sim_df = ItemCF.similarity(itemCount_df=itemCount_df, pairCount_df=pairCount_df)
-
-        # calculate topk sim
-        topk_sim_df = ItemCF.topk_similarity(sim_df=sim_df, k=self.K)
-
-        # recommend for user
-        recommend_df = ItemCF.recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=self.N)
-
-        # time of calculate
-
-        # write four table to MySQL
-        # 为了写入迅速，perisit
-        user_history_df.persist()
-        itemCount_df.persist()
-        pairCount_df.persist()
-        topk_sim_df.persist()
-        recommend_df.persist()
         # show tables
         print('this is user_history_df')
         user_history_df.show(5)
@@ -435,80 +408,59 @@ class ItemCF(Algorithm):
         print('this is recommend_df')
         recommend_df.show(5)
 
-        end_time = time.time()
-        print('ItemCF algorithum clculate and read  用了')
-        print(end_time - start_time)
-
-        # unpersist
-        recommend_df.unpersist()
-        topk_sim_df.unpersist()
-        pairCount_df.unpersist()
-        itemCount_df.unpersist()
-        user_history_df.unpersist()
-        ratings_df.unpersist()
-        # 后面的会被级联unpersist
-
         # all time
         end_time = time.time()
         print('ItemCF algorithum 用了')
         print(end_time - start_time)
 
-    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
-        '''
-        itemcf算法，计算出相似度和topk相似度
-            :param spark:sparkSession
-            :param k: top k
-            :param N: recommend N
-            :return:
-        '''
-        print('starting ItemCF algorithum')
-        start_time = time.time()
+    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, klist: list, testRatio: float = 0.1):
+        M = math.ceil(1 / (testRatio))
+        # M为实验次数
 
-        ## get three tables as spark's dataframe
+        for i in range(M):
 
-        ratings_df = myMySQLIO.read('ratings_df')
+            Evaluation.splitRecord(self.spark, myMySQLIO, self.recordPath, test1Retio=testRatio / 2,
+                                   test2Retio=testRatio / 2)
+            # Random Split Data into train - test
 
-        # get user history
-        user_history_df = ratings_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+            items_df = PreProcessingUtils.ReadMovies_df(self.spark).select('movieId').toDF('item')
 
-        # calculate itemCount
-        itemCount_df = ItemCF.itemCount(user_history_df=user_history_df)
+            train_df = myMySQLIO.read('train').select('user', 'item', 'rating')
 
-        # calculate pairCount
-        pairCount_df = ItemCF.pairCount(user_history_df=user_history_df)
+            test1_df = myMySQLIO.read('test1').select('user', 'item', 'rating')
+            test2_df = myMySQLIO.read('test2').select('user', 'item', 'rating')
+            test_df = test1_df.union(test2_df)
 
-        # calculate sim
-        sim_df = ItemCF.similarity(itemCount_df=itemCount_df, pairCount_df=pairCount_df)
+            for k in klist:
+                print('starting evaluate')
+                start_time = time.time()
 
-        # calculate topk sim
-        topk_sim_df = ItemCF.topk_similarity(sim_df=sim_df, k=self.K)
+                user_history_df, itemCount_df, pairCount_df, topk_sim_df, recommend_df = ItemCF.itemCF(train_df,
+                                                                                                       k, self.N)
 
-        # recommend for user
-        recommend_df = ItemCF.recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=self.N)
+                recall = Evaluation.Recall(recommend_df=recommend_df, test_df=test_df)
+                precision = Evaluation.Precision(recommend_df=recommend_df, test_df=test_df)
+                coverage = Evaluation.Coverage(items_df=items_df, recommend_df=recommend_df)
+                popularity = Evaluation.Popularity(itemCount_df=itemCount_df, recommend_df=recommend_df)
 
-        # write four table to MySQL
+                Evaluation.resultToMySQL(self.spark, myMySQLIO, k, self.N, recall, precision, coverage, popularity)
+                # 将此次结果入库
 
-        itemCount_df.persist()
-        recommend_df.persist()
+                end_time = time.time()
+                print('once evaluate use time')
+                print(end_time - start_time)
 
-        myMySQLIO.write(df=itemCount_df, table='itemCount_df')
-        myMySQLIO.write(spark, df=recommend_df, table='recommend_df')
+        Evaluation.resultStatisticToMySQL(self.spark, myMySQLIO)
+        # 统计结果
 
-        recommend_df.unpersist()
-        itemCount_df.unpersist()
-
-        # all time
-        end_time = time.time()
-        print('ItemCF algorithum 用了')
-        print(end_time - start_time)
+        return
 
 
 class StreamingRecommend(ItemCF):
     interval: int = None
 
-
-    def __init__(self, spark: SparkSession, K, N, recordPath: str,interval: int):
-        ItemCF.__init__(self, spark=spark, K=K, N=N,recordPath=recordPath)
+    def __init__(self, spark: SparkSession, K, N, recordPath: str, interval: int):
+        ItemCF.__init__(self, spark=spark, K=K, N=N, recordPath=recordPath)
         self.interval = interval
 
     def refresh_accum(accum: Accumulator):
@@ -535,7 +487,7 @@ class StreamingRecommend(ItemCF):
 
         return oldacc_num_str, newacc_num_str
 
-    def get_ratinglogDstream_from_Kafka(ssc: StreamingContext, kafkaMetadataBrokerList:str):
+    def GetRatinglogDstreamFromKafka(ssc: StreamingContext, kafkaMetadataBrokerList: str):
         """
         get ratinglog DStream from kafka
         :param ssc: StreamingContext
@@ -553,7 +505,7 @@ class StreamingRecommend(ItemCF):
         # ratinglog_DStream = kafkaStream.map(lambda x: x[1])  #get first
         # ratinglog_DStream = ratinglog_DStream.map(data_processing_utils.split_streaminglog) # pre process the log
 
-        ratinglog_DStream = kafkaStream.map(lambda x: data_processing_utils.split_streaminglog(x[1]))
+        ratinglog_DStream = kafkaStream.map(lambda x: PreProcessingUtils.PreProcessKafkaStream(x[1]))
 
         return ratinglog_DStream
 
@@ -580,7 +532,21 @@ class StreamingRecommend(ItemCF):
 
         return recommend_df
 
-    def StreamingRecommend_fun(rdd: RDD, spark: SparkSession, accum: Accumulator, N: int, myMySQLIO: MyMySQLIO,
+    def streamingRecommend(ratinglog_df: DataFrame, user_history_df: DataFrame, topk_sim_df: DataFrame, N: int):
+
+        ratinglog_df = ratinglog_df.select('user', 'item', 'rating')
+
+        # update user history
+        user_history_df = user_history_df.union(ratinglog_df)
+
+        # recommend for user
+        recommend_df = StreamingRecommend.recommend_N_forActionUser(ratinglog_df=ratinglog_df,
+                                                                    user_history_df=user_history_df,
+                                                                    topk_sim_df=topk_sim_df, N=N)
+
+        return user_history_df, recommend_df
+
+    def streamingRecommend_fun(rdd: RDD, spark: SparkSession, accum: Accumulator, N: int, myMySQLIO: MyMySQLIO,
                                tempFileIO: MyIO,
                                runtype: str = 'calculate'):
 
@@ -606,16 +572,10 @@ class StreamingRecommend(ItemCF):
 
             ratinglog_df = spark.createDataFrame(rdd)
             ratinglog_df = ratinglog_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
-
             # 后面多用
 
-            # update user history
-            user_history_df = user_history_df.union(ratinglog_df)
-
-            # recommend for user
-            recommend_df = StreamingRecommend.recommend_N_forActionUser(ratinglog_df=ratinglog_df,
-                                                                        user_history_df=user_history_df,
-                                                                        topk_sim_df=topk_sim_df, N=N)
+            user_history_df, recommend_df = StreamingRecommend.streamingRecommend(ratinglog_df, user_history_df,
+                                                                                  topk_sim_df, N)
 
             if runtype == 'calculate' or runtype == 'evaluate':
                 ratinglog_df.persist()
@@ -639,7 +599,6 @@ class StreamingRecommend(ItemCF):
                 recommend_df.unpersist()
                 user_history_df.unpersist()
                 ratinglog_df.unpersist()
-
 
             end_time = time.time()
             print('本次 streaming recommend calculate and read  用了')
@@ -676,6 +635,79 @@ class StreamingRecommend(ItemCF):
             print("this batch DStream is Empty ! ")
         return
 
+    def streamingRecommend_showfun(rdd: RDD, spark: SparkSession, accum: Accumulator, N: int, myMySQLIO: MyMySQLIO,
+                                   tempFileIO: MyIO):
+
+        if rdd.isEmpty() == False:
+            start_time = time.time()
+
+            # 计时器
+            # 记录文件名累加器(user history )
+            oldacc_num_str, newacc_num_str = StreamingRecommend.refresh_accum(accum=accum)
+
+            # read old table user history
+            if int(accum.value) == 1:
+                # read from MySQL
+                # if first run ,read from MySQL
+                user_history_df = myMySQLIO.read('user_history_df')
+                topk_sim_df = myMySQLIO.read('topk_sim_df')
+                itemCount_df = myMySQLIO.read('itemCount_df')
+            else:
+                # read from temp saver
+                user_history_df = tempFileIO.read('tempuser_history_df' + oldacc_num_str)
+                topk_sim_df = tempFileIO.read('temptopk_sim_df')
+                itemCount_df = tempFileIO.read('tempitemCount_df')
+
+            ratinglog_df = spark.createDataFrame(rdd)
+            ratinglog_df = ratinglog_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+            # 后面多用
+
+            user_history_df, recommend_df = StreamingRecommend.streamingRecommend(ratinglog_df, user_history_df,
+                                                                                  topk_sim_df, N)
+
+            ratinglog_df.persist()
+            user_history_df.persist()
+            recommend_df.persist()
+            print('this is ratinglog_df')
+            ratinglog_df.show(5)
+            print('this is user_history_df')
+            user_history_df.show(5)
+            print('this is recommend_df')
+            recommend_df.show(5)
+
+            end_time = time.time()
+            print('本次 streaming recommend calculate and read  用了')
+            print(end_time - start_time)
+
+            # 写入文件或者库:
+            # 默认写入redis
+            if int(accum.value) == 1:
+                # 第一次进行，顺便将相似度写入 temp saver
+                tempFileIO.write(df=topk_sim_df, table='temptopk_sim_df')
+                tempFileIO.write(df=itemCount_df, table='tempitemCount_df')
+            tempFileIO.write(df=user_history_df, table='tempuser_history_df' + newacc_num_str)
+
+            # # 推荐结果写入MySQL
+            # myMySQLIO.write(df=recommend_df, table='recommend_result', mode='append')
+
+            recommend_df.unpersist()
+            user_history_df.unpersist()
+            ratinglog_df.unpersist()
+            # 级联unpersist 后面的df
+
+            end_time = time.time()
+            print('本次 streaming recommend only  用了')
+            print(end_time - start_time)
+
+        else:
+            print("this batch DStream is Empty ! ")
+        return
+
+    # TODO 完善
+    def streamingRecommend_evaluatefun(rdd: RDD, spark: SparkSession, accum: Accumulator, N: int, myMySQLIO: MyMySQLIO,
+                                       tempFileIO: MyIO):
+        pass
+
     def calculate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
         print('Starting streaming recommend!!')
 
@@ -685,13 +717,13 @@ class StreamingRecommend(ItemCF):
 
         ssc = StreamingContext(sc, self.interval)
 
-        ratinglog_DStream = StreamingRecommend.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = StreamingRecommend.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         ratinglog_DStream.foreachRDD(
-            lambda x: StreamingRecommend.StreamingRecommend_fun(rdd=x, spark=self.spark, accum=accum, N=N,
+            lambda x: StreamingRecommend.streamingRecommend_fun(rdd=x, spark=self.spark, accum=accum, N=self.N,
                                                                 myMySQLIO=myMySQLIO,
-                                                                tempFileIO=tempFileIO, runtype='calculate'))
+                                                                tempFileIO=tempFileIO))
         # for each batch recommend use calculated similarity
 
         ssc.start()
@@ -706,19 +738,20 @@ class StreamingRecommend(ItemCF):
 
         ssc = StreamingContext(sc, self.interval)
 
-        ratinglog_DStream = StreamingRecommend.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = StreamingRecommend.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         ratinglog_DStream.foreachRDD(
-            lambda x: StreamingRecommend.StreamingRecommend_fun(rdd=x, spark=self.spark, accum=accum, N=N,
-                                                                myMySQLIO=myMySQLIO,
-                                                                tempFileIO=tempFileIO, runtype='show'))
+            lambda x: StreamingRecommend.streamingRecommend_showfun(rdd=x, spark=self.spark, accum=accum, N=self.N,
+                                                                    myMySQLIO=myMySQLIO,
+                                                                    tempFileIO=tempFileIO))
         # for each batch recommend use calculated similarity
 
         ssc.start()
         ssc.awaitTermination()
 
-    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
+    # TODO 完善
+    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, klist: list, testRatio: float = 0.1):
         print('Starting streaming recommend!!')
 
         sc = self.spark.sparkContext
@@ -727,23 +760,24 @@ class StreamingRecommend(ItemCF):
 
         ssc = StreamingContext(sc, self.interval)
 
-        ratinglog_DStream = StreamingRecommend.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = StreamingRecommend.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         ratinglog_DStream.foreachRDD(
-            lambda x: StreamingRecommend.StreamingRecommend_fun(rdd=x, spark=self.spark, accum=accum, N=N,
-                                                                myMySQLIO=myMySQLIO,
-                                                                tempFileIO=tempFileIO, runtype='evaluate'))
+            lambda x: StreamingRecommend.streamingRecommend_evaluatefun(rdd=x, spark=self.spark, accum=accum, N=self.N,
+                                                                        myMySQLIO=myMySQLIO,
+                                                                        tempFileIO=tempFileIO))
         # for each batch recommend use calculated similarity
 
         ssc.start()
         ssc.awaitTermination()
 
 
+# TODO UPDATE FLOAT
 class RealTimeUpdatItemCF(StreamingRecommend):
 
     def __init__(self, spark: SparkSession, K, N, recordPath: str, interval: int):
-        StreamingRecommend.__init__(self, spark=spark, K=K, N=N,recordPath=recordPath, interval=interval
+        StreamingRecommend.__init__(self, spark=spark, K=K, N=N, recordPath=recordPath, interval=interval
                                     )
 
     def itemCount_update(itemCount_df: DataFrame, ratinglog_df: DataFrame):
@@ -772,7 +806,7 @@ class RealTimeUpdatItemCF(StreamingRecommend):
             else:
                 return old + delta
 
-        update_udf = udf(lambda x, y: update_fun(x, y), IntegerType())
+        update_udf = udf(lambda x, y: update_fun(x, y), FloatType())
 
         itemCount_df = itemCount_df.join(itemCount_delta_df, 'item', 'full_outer') \
             .withColumn('new_itemCount', update_udf('itemCount', 'itemCount_delta')) \
@@ -802,11 +836,11 @@ class RealTimeUpdatItemCF(StreamingRecommend):
             else:
                 return rating_q
 
-        co_rating_udf = udf(lambda x, y: co_rating_fun(x, y), IntegerType())
+        co_rating_udf = udf(lambda x, y: co_rating_fun(x, y), FloatType())
         # 定义udf 返回值是 int (spark 里)
 
         # ratinglog_df=ratinglog_df.repartition('user')
-        #看看能否优化
+        # 看看能否优化
 
         co_rating_delta_newold_df = ratinglog_df.toDF('user', 'item_p', 'rating_p') \
             .join(user_history_df.toDF('user', 'item_q', 'rating_q'), 'user') \
@@ -853,10 +887,10 @@ class RealTimeUpdatItemCF(StreamingRecommend):
             else:
                 return old + delta
 
-        update_udf = udf(lambda x, y: update_fun(x, y), IntegerType())
+        update_udf = udf(lambda x, y: update_fun(x, y), FloatType())
 
         # pairCount_df=pairCount_df.repartition('item_p','item_q')
-        #看优化
+        # 看优化
         pairCount_df = pairCount_df.join(pairCount_delta_df, ['item_p', 'item_q'], 'full_outer') \
             .withColumn('new_pairCount', update_udf('pairCount', 'pairCount_delta')) \
             .select('item_p', 'item_q', 'new_pairCount') \
@@ -867,8 +901,110 @@ class RealTimeUpdatItemCF(StreamingRecommend):
 
         return pairCount_df
 
-    def RealTimeRecommend_fun(rdd: RDD, spark: SparkSession, accum: Accumulator, k: int, N: int, myMySQLIO: MyMySQLIO,
-                              tempFileIO: MyIO, runtype: str = 'calculate'):
+    def realTimeUpdateItemCF(itemCount_df: DataFrame, pairCount_df: DataFrame, user_history_df: DataFrame,
+                             ratinglog_df: DataFrame, k: int, N: int):
+
+        ratinglog_df = ratinglog_df.select('user', 'item', 'rating')
+        # update itemCount
+        itemCount_df = RealTimeUpdatItemCF.itemCount_update(itemCount_df=itemCount_df, ratinglog_df=ratinglog_df)
+
+        # update pairCount
+        pairCount_df = RealTimeUpdatItemCF.pairCount_update(pairCount_df=pairCount_df,
+                                                            user_history_df=user_history_df,
+                                                            ratinglog_df=ratinglog_df)
+
+        # calculate new similarity
+        sim_df = RealTimeUpdatItemCF.similarity(itemCount_df=itemCount_df, pairCount_df=pairCount_df)
+
+        # topk similarity
+        topk_sim_df = RealTimeUpdatItemCF.topk_similarity(sim_df=sim_df, k=k)
+
+        # update user history
+        user_history_df = user_history_df.union(ratinglog_df)
+
+        # recommend N for user (abendon)
+        # recommend_df = recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=N)
+
+        # recommend N for action user
+        recommend_df = RealTimeUpdatItemCF.recommend_N_forActionUser(ratinglog_df=ratinglog_df,
+                                                                     user_history_df=user_history_df,
+                                                                     topk_sim_df=topk_sim_df, N=N)
+
+        return itemCount_df, pairCount_df, user_history_df, recommend_df
+
+    def realTimeRecommend_fun(rdd: RDD, spark: SparkSession, accum: Accumulator, k: int, N: int, myMySQLIO: MyMySQLIO,
+                              tempFileIO: MyIO):
+        """
+        for each batch rdd of Dstream to Incremental Update the similarity
+        :param rdd: each batch rdd of Dstream
+        :param accum:  accumulator of sc to register the file name num
+        :param k: top k simliarity
+        :param N: recommend N
+        :return:
+        """
+
+        if rdd.isEmpty() == False:
+            start_time = time.time()
+            # 计时器
+
+            # 记录文件名累加器
+            oldacc_num_str, newacc_num_str = RealTimeUpdatItemCF.refresh_accum(accum)
+
+            # read old table
+            if int(accum.value) == 1:
+                # if first run ,read from MySQL
+                user_history_df = myMySQLIO.read('user_history_df')
+                itemCount_df = myMySQLIO.read('itemCount_df')
+                pairCount_df = myMySQLIO.read('pairCount_df')
+            else:
+                # # not first run ,read from other file such as parquet with old num name file
+                user_history_df = tempFileIO.read('tempuser_history_df' + oldacc_num_str)
+                itemCount_df = tempFileIO.read('tempitemCount_df' + oldacc_num_str)
+                pairCount_df = tempFileIO.read('temppairCount_df' + oldacc_num_str)
+
+            # pre process the dstream rdd
+            ratinglog_df = spark.createDataFrame(rdd)
+            ratinglog_df = ratinglog_df.select('UserID', 'MovieID', 'Rating').toDF('user', 'item', 'rating')
+            # 后面多用
+
+            itemCount_df, pairCount_df, user_history_df, recommend_df = RealTimeUpdatItemCF.realTimeUpdateItemCF(
+                itemCount_df, pairCount_df, user_history_df, ratinglog_df, k, N)
+
+            ratinglog_df.persist()
+            user_history_df.persist()
+            itemCount_df.persist()
+            pairCount_df.persist()
+            recommend_df.persist()
+
+            # 写入文件或者库:
+            # 写入文件/redis
+            tempFileIO.write(df=user_history_df, table='tempuser_history_df' + newacc_num_str)
+            tempFileIO.write(df=itemCount_df, table='tempitemCount_df' + newacc_num_str)
+            tempFileIO.write(df=pairCount_df, table='temppairCount_df' + newacc_num_str)
+
+            # write recommend resutlt to MySQL
+            myMySQLIO.write(df=recommend_df, table='recommend_result', mode='append')
+
+            time.sleep(1)
+            # wait write terminal
+
+            recommend_df.unpersist()
+            pairCount_df.unpersist()
+            itemCount_df.unpersist()
+            user_history_df.unpersist()
+            ratinglog_df.unpersist()
+            # 级联unpersist 后面的df
+
+            end_time = time.time()
+            print('本次 Incremental Update 用了')
+            print(end_time - start_time)
+
+        else:
+            print("this batch DStream is Empty ! ")
+
+    def realTimeRecommend_showfun(rdd: RDD, spark: SparkSession, accum: Accumulator, k: int, N: int,
+                                  myMySQLIO: MyMySQLIO,
+                                  tempFileIO: MyIO):
         """
         for each batch rdd of Dstream to Incremental Update the similarity
         :param rdd: each batch rdd of Dstream
@@ -905,59 +1041,29 @@ class RealTimeUpdatItemCF(StreamingRecommend):
             ratinglog_df.persist()
             user_history_df.persist()
 
-            # update itemCount
-            itemCount_df = RealTimeUpdatItemCF.itemCount_update(itemCount_df=itemCount_df, ratinglog_df=ratinglog_df)
+            itemCount_df, pairCount_df, user_history_df, recommend_df = RealTimeUpdatItemCF.realTimeUpdateItemCF(
+                itemCount_df, pairCount_df, user_history_df, ratinglog_df, k, N)
 
-            # update pairCount
-            pairCount_df = RealTimeUpdatItemCF.pairCount_update(pairCount_df=pairCount_df,
-                                                                user_history_df=user_history_df,
-                                                                ratinglog_df=ratinglog_df)
+            recommend_df.unpersist()
+            pairCount_df.unpersist()
+            itemCount_df.unpersist()
+            user_history_df.unpersist()
+            ratinglog_df.unpersist()
 
-            # calculate new similarity
-            sim_df = RealTimeUpdatItemCF.similarity(itemCount_df=itemCount_df, pairCount_df=pairCount_df)
+            print('this is user_history_df')
+            user_history_df.show(5)
+            print('this is ratinglog_df')
+            ratinglog_df.show(5)
+            print('this is itemCount_df')
+            itemCount_df.show(5)
+            print('this is pairCount_df')
+            pairCount_df.show(5)
+            print('this is recommend_df')
+            recommend_df.show(5)
 
-            # topk similarity
-            topk_sim_df = RealTimeUpdatItemCF.topk_similarity(sim_df=sim_df, k=k)
-
-            # update user history
-            user_history_df = user_history_df.union(ratinglog_df)
-
-            # recommend N for user (abendon)
-            # recommend_df = recommend_N_for_user(user_history_df=user_history_df, topk_sim_df=topk_sim_df, N=N)
-
-            # recommend N for action user
-            recommend_df = RealTimeUpdatItemCF.recommend_N_forActionUser(ratinglog_df=ratinglog_df,
-                                                                         user_history_df=user_history_df,
-                                                                         topk_sim_df=topk_sim_df, N=N)
-
-            if runtype == 'calculate' or runtype == 'evaluate':
-                user_history_df.persist()
-                itemCount_df.persist()
-                pairCount_df.persist()
-                topk_sim_df.persist()
-                recommend_df.persist()
-
-            elif runtype == 'show':
-                # ratinglog_df.persist()
-                # user_history_df.persist()
-                print('this is user_history_df')
-                user_history_df.show(5)
-                print('this is ratinglog_df')
-                ratinglog_df.show(5)
-                print('this is itemCount_df')
-                itemCount_df.show(5)
-                print('this is pairCount_df')
-                pairCount_df.show(5)
-                print('this is topk_sim_df')
-                topk_sim_df.show(5)
-                print('this is recommend_df')
-                recommend_df.show(5)
-
-                end_time = time.time()
-                print('read and calculate use:')
-                print(end_time - start_time)
-
-
+            end_time = time.time()
+            print('read and calculate use:')
+            print(end_time - start_time)
 
             # 写入文件或者库:
             # 写入文件/redis
@@ -966,14 +1072,13 @@ class RealTimeUpdatItemCF(StreamingRecommend):
             tempFileIO.write(df=itemCount_df, table='tempitemCount_df' + newacc_num_str)
             tempFileIO.write(df=pairCount_df, table='temppairCount_df' + newacc_num_str)
 
-            # write recommend resutlt to MySQL
-            myMySQLIO.write(df=recommend_df, table='recommend_result', mode='append')
+            # # write recommend resutlt to MySQL
+            # myMySQLIO.write(df=recommend_df, table='recommend_result', mode='append')
 
             time.sleep(1)
             # wait write terminal
 
             recommend_df.unpersist()
-            topk_sim_df.unpersist()
             pairCount_df.unpersist()
             itemCount_df.unpersist()
             user_history_df.unpersist()
@@ -987,6 +1092,12 @@ class RealTimeUpdatItemCF(StreamingRecommend):
         else:
             print("this batch DStream is Empty ! ")
 
+    # TODO 完善
+    def realTimeRecommend_evaluatefun(rdd: RDD, spark: SparkSession, accum: Accumulator, k: int, N: int,
+                                      myMySQLIO: MyMySQLIO,
+                                      tempFileIO: MyIO):
+        pass
+
     def calculate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
         """
                 get log from kafka and update the similarity and recommend
@@ -995,22 +1106,21 @@ class RealTimeUpdatItemCF(StreamingRecommend):
                 """
         print('Starting streaming Real Time Recommend')
 
-        sc = spark.sparkContext
+        sc = self.spark.sparkContext
         accum = sc.accumulator(0)
         # set accumulator to regist what table is to read or write
 
         ssc = StreamingContext(sc, self.interval)
         # 创建一个StreamingContext用于SparkStreaming，划分Batches时间间隔为interval s
 
-        ratinglog_DStream = RealTimeUpdatItemCF.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = RealTimeUpdatItemCF.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         # ratinglog_DStream.foreachRDD(lambda x: incremental_update_fun(rdd=x, accum=accum, k=k, N=N, typestr=typestr))
         ratinglog_DStream.foreachRDD(
-            lambda x: RealTimeUpdatItemCF.RealTimeRecommend_fun(rdd=x, spark=self.spark, accum=accum, k=self.K,
+            lambda x: RealTimeUpdatItemCF.realTimeRecommend_fun(rdd=x, spark=self.spark, accum=accum, k=self.K,
                                                                 N=self.N,
-                                                                myMySQLIO=myMySQLIO, tempFileIO=tempFileIO,
-                                                                runtype='calculate'))
+                                                                myMySQLIO=myMySQLIO, tempFileIO=tempFileIO))
 
         ssc.start()  # Start the computation
         ssc.awaitTermination()  # Wait for the computation to terminate
@@ -1023,27 +1133,27 @@ class RealTimeUpdatItemCF(StreamingRecommend):
                         """
         print('Starting streaming Real Time Recommend')
 
-        sc = spark.sparkContext
+        sc = self.spark.sparkContext
         accum = sc.accumulator(0)
         # set accumulator to regist what table is to read or write
 
         ssc = StreamingContext(sc, self.interval)
         # 创建一个StreamingContext用于SparkStreaming，划分Batches时间间隔为interval s
 
-        ratinglog_DStream = RealTimeUpdatItemCF.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = RealTimeUpdatItemCF.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         # ratinglog_DStream.foreachRDD(lambda x: incremental_update_fun(rdd=x, accum=accum, k=k, N=N, typestr=typestr))
         ratinglog_DStream.foreachRDD(
-            lambda x: RealTimeUpdatItemCF.RealTimeRecommend_fun(rdd=x, spark=self.spark, accum=accum, k=self.K,
-                                                                N=self.N,
-                                                                myMySQLIO=myMySQLIO, tempFileIO=tempFileIO,
-                                                                runtype='show'))
+            lambda x: RealTimeUpdatItemCF.realTimeRecommend_showfun(rdd=x, spark=self.spark, accum=accum, k=self.K,
+                                                                    N=self.N,
+                                                                    myMySQLIO=myMySQLIO, tempFileIO=tempFileIO))
 
         ssc.start()  # Start the computation
         ssc.awaitTermination()  # Wait for the computation to terminate
 
-    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO):
+    # TODO 完善
+    def evaluate(self, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, klist: list, testRatio: float = 0.1):
         """
                 get log from kafka and update the similarity and recommend
             :param spark: sparkSession
@@ -1051,22 +1161,21 @@ class RealTimeUpdatItemCF(StreamingRecommend):
                                 """
         print('Starting streaming Real Time Recommend')
 
-        sc = spark.sparkContext
+        sc = self.spark.sparkContext
         accum = sc.accumulator(0)
         # set accumulator to regist what table is to read or write
 
         ssc = StreamingContext(sc, self.interval)
         # 创建一个StreamingContext用于SparkStreaming，划分Batches时间间隔为interval s
 
-        ratinglog_DStream = RealTimeUpdatItemCF.get_ratinglogDstream_from_Kafka(ssc, self.recordPath)
+        ratinglog_DStream = RealTimeUpdatItemCF.GetRatinglogDstreamFromKafka(ssc, self.recordPath)
         # get DStream from log
 
         # ratinglog_DStream.foreachRDD(lambda x: incremental_update_fun(rdd=x, accum=accum, k=k, N=N, typestr=typestr))
         ratinglog_DStream.foreachRDD(
-            lambda x: RealTimeUpdatItemCF.RealTimeRecommend_fun(rdd=x, spark=self.spark, accum=accum, k=self.K,
-                                                                N=self.N,
-                                                                myMySQLIO=myMySQLIO, tempFileIO=tempFileIO,
-                                                                runtype='evaluate'))
+            lambda x: RealTimeUpdatItemCF.realTimeRecommend_evaluatefun(rdd=x, spark=self.spark, accum=accum, k=self.K,
+                                                                        N=self.N,
+                                                                        myMySQLIO=myMySQLIO, tempFileIO=tempFileIO))
 
         ssc.start()  # Start the computation
         ssc.awaitTermination()  # Wait for the computation to terminate
@@ -1076,13 +1185,13 @@ class Evaluation:
     spark: SparkSession = None
     K: int = None
     N: int = None
-    recordPath:str=None
+    recordPath: str = None
 
-    def __init__(self, spark: SparkSession, K: int, N: int,recordPath:str):
+    def __init__(self, spark: SparkSession, K: int, N: int, recordPath: str):
         self.spark = spark
         self.K = K
         self.N = N
-        self.recordPath=recordPath
+        self.recordPath = recordPath
 
     def Recall(recommend_df: DataFrame, test_df: DataFrame):
         """
@@ -1118,6 +1227,7 @@ class Evaluation:
 
         return precision
 
+    # TODO 改正覆盖率公式
     def Coverage(items_df: DataFrame, recommend_df: DataFrame):
         """
         覆盖率 Coverage 返回值
@@ -1162,7 +1272,8 @@ class Evaluation:
 
         return popularity
 
-    def EvaluationKN(spark: SparkSession, k: int, N: int, myMySQLIO: MyMySQLIO, mode: str = 'ItemCF'):
+    # TODO 改正指标
+    def evaluateKN(spark: SparkSession, k: int, N: int, myMySQLIO: MyMySQLIO, mode: str = 'ItemCF'):
         """
         对每次KN的评价指标做记录
         :param spark:
@@ -1173,13 +1284,11 @@ class Evaluation:
         """
         recommend_df = myMySQLIO.read('recommend_df')
 
-        items_df = data_processing_utils.get_movies_df(spark).select('MovieID').toDF('item')
+        items_df = PreProcessingUtils.ReadMovies_df(spark).select('movieId').toDF('item')
         itemCount_df = myMySQLIO.read(spark, 'itemCount_df')
 
-        test1_df = myMySQLIO.read(spark, 'test1_df').select('UserID', 'MovieID', 'Rating').toDF('user', 'item',
-                                                                                                'rating')
-        test2_df = myMySQLIO.read(spark, 'test2_df').select('UserID', 'MovieID', 'Rating').toDF('user', 'item',
-                                                                                                'rating')
+        test1_df = myMySQLIO.read(spark, 'test1').select('user', 'item', 'rating')
+        test2_df = myMySQLIO.read(spark, 'test2').select('user', 'item', 'rating')
 
         if mode == 'ItemCF':
             test1_df = test1_df.union(test2_df)
@@ -1218,6 +1327,28 @@ class Evaluation:
         row_df = spark.createDataFrame(rowlist)
         myMySQLIO.write(df=row_df, table='EvaluationKN', mode='append')
 
+    def resultToMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO, k: int, N: int, recall: float, precision: float,
+                      coverage: float, popularity: float):
+
+        print('Recall is :')
+        print(recall)
+        print("Precision is :")
+        print(precision)
+        print('Coverage is :')
+        print(coverage)
+        print('Popularity is :')
+        print(popularity)
+
+        rowlist = [Row(recall=recall, precision=precision, coverage=coverage, popularity=popularity, k=k, N=N)]
+        row_df = spark.createDataFrame(rowlist)
+        myMySQLIO.write(df=row_df, table='resultKN', mode='append')
+
+    def resultStatisticToMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO):
+        rows_df = myMySQLIO.read(table='resultKN')
+        rowsMean_df = rows_df.groupBy(['k', 'N']).agg(
+            {'recall': 'mean', 'precision': 'mean', 'coverage': 'mean', 'popularity': 'mean'})
+        myMySQLIO.write(df=rowsMean_df, table='resultStatistic', mode='append')
+
     def Evaluation(spark: SparkSession, myMySQLIO: MyMySQLIO):
         """
         对多次实验聚合求平均
@@ -1229,8 +1360,9 @@ class Evaluation:
             {'recall': 'mean', 'precision': 'mean', 'coverage': 'mean', 'popularity': 'mean'})
         myMySQLIO.write(df=rowsMean_df, table='Evaluation', mode='append')
 
-    def evaluate(self, spark: SparkSession, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, klist: list, N: int = 10,
-                 testRatio: float = 0.1, mode='None',
+    def evaluate(self, spark: SparkSession, myMySQLIO: MyMySQLIO, tempFileIO: MyIO, algorithm: str, klist: list,
+                 N: int = 10,
+                 test1Ratio: float = 0.05, test2Ratio: float = 0.05, modestr='',
                  M: int = 10):
         """
         评价指标运行方法
@@ -1240,13 +1372,14 @@ class Evaluation:
         :return:
         """
         # M = math.ceil(1 / testRatio)
-
+        M = math.ceil(1 / (test1Ratio + test2Ratio))
         for i in range(M):
-            split_data(spark, mode=mode, testRetio=testRatio)
+            PreProcessingDataToFileAndMySQL(spark, mode=modestr, myMySQLIO=myMySQLIO, test1Retio=test1Ratio,
+                                            test2Retio=test2Ratio)
             for k in klist:
 
                 if algorithm == 'ItemCF':
-                    algo = ItemCF(spark=spark, K=k, N=N,recordPath=self.recordPath)
+                    algo = ItemCF(spark=spark, K=k, N=N, recordPath=self.recordPath)
                 elif algorithm == 'RealTimeUpdateItemCF':
                     algo = RealTimeUpdatItemCF(spark=spark, K=K, interval=interval,
                                                kafkaMetadataBrokerList=self.recordPath)
@@ -1275,46 +1408,102 @@ class Evaluation:
         # RealTimeRecommend_fun(rdds, accum=spark.sparkContext.accumulator(0), k=20, N=10, typestr='parquet')
         return 0
 
+    def splitRecord(spark: SparkSession, myMySQLIO: MyMySQLIO, recordPath: str, test1Retio: float = 0.05,
+                    test2Retio: float = 0.05):
 
-def split_data(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'debug2', testRetio: float = 0.1):
-    print('starting method of random split rating.dat and write to MySQL')
+        print('starting split data from recordPath')
 
-    filename = '/home/zzh/zzh/Program/Recommend_System/ml-1m/ratings.dat'
-    trainfile = '/home/zzh/zzh/Program/Recommend_System/ml-1m/train_ratings.dat'
-    testfile = '/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings.dat'
-    testfile2 = '/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings2.dat'
+        ratings_df = myMySQLIO.read(recordPath)
 
-    datalist = random_split.readfile(filename)
+        [train_df, test1_df, test2_df] = ratings_df.randomSplit([1 - test1Retio - test2Retio, test1Retio, test2Retio])
 
-    if mode == 'debug':
-        # 用来调试模式的  划分 训练集，测试集，训练集
-        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 0.001, 0.001, 0.001)
-    elif mode == 'debug2':
-        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 0.1, 0.1, 0.1)
+        myMySQLIO.write(df=train_df, table='train')
+        myMySQLIO.write(df=test1_df, table='test1')
+        myMySQLIO.write(df=test2_df, table='test2')
+        print('starting split data from recordPath Over')
+
+
+# def split_data(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'debug', testRetio: float = 0.1):
+#     print('starting method of random split rating.dat and write to MySQL')
+#
+#     ratingsfile = 'file:///home/zzh/zzh/Program/Recommend_System/ml-latest-small/ratings.csv'
+#
+#     filename = '/home/zzh/zzh/Program/Recommend_System/ml-1m/ratings.dat'
+#     trainfile = '/home/zzh/zzh/Program/Recommend_System/ml-1m/train_ratings.dat'
+#     testfile = '/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings.dat'
+#     testfile2 = '/home/zzh/zzh/Program/Recommend_System/ml-1m/test_ratings2.dat'
+#
+#     datalist = PreProcessingUtils.ReadFile(filename)
+#
+#     if mode == 'debug':
+#         # 用来调试模式的  划分 训练集，测试集，训练集
+#         trainlist, testlist1, testlist2 = PreProcessingUtils.random_split(datalist, 0.001, 0.001, 0.001)
+#     elif mode == 'debug2':
+#         trainlist, testlist1, testlist2 = PreProcessingUtils.random_split(datalist, 0.1, 0.1, 0.1)
+#     else:
+#         trainlist, testlist1, testlist2 = PreProcessingUtils.random_split(datalist, 1 - 2 * testRetio, testRetio, testRetio)
+#
+#     random_split.writefile(trainlist, trainfile, testlist1, testfile, testlist2, testfile2)
+#
+#     ratings_df = data_processing_utils.get_ratings_df(spark, 'file://' + trainfile)
+#     test1_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile)
+#     test2_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile2)
+#
+#     # if mode == 'debug':
+#     #     # 用来调试模式的  划分 训练集，测试集，训练集
+#     #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.001, 0.001, 0.998])
+#     #     # write four table to MySQL
+#     # elif mode == 'debug2':
+#     #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.1, 0.001, 0.899])
+#     #     # write four table to MySQL
+#     # else:
+#     #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.8, 0.1, 0.1])
+#     #     # 划分 训练集，测试集，训练集
+#
+#     # write splited table to MySQL
+#     myMySQLIO.write(df=ratings_df, table='ratings_df')
+#     myMySQLIO.write(df=test1_df, table='test1_df')
+#     myMySQLIO.write(df=test2_df, table='test2_df')
+
+
+def PreProcessingDataToFileAndMySQL(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'nosplit',
+                                    test1Retio: float = 0.05, test2Retio: float = 0.05):
+    print('starting preprocessing of ratings.csv and write to MySQL')
+
+    ratingsfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/ratings.csv'
+
+    trainfile = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/train.csv'
+    test1file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test1.csv'
+    test2file = '/home/zzh/zzh/Program/Recommend_System/ml-latest-small/test2.csv'
+
+    if mode == 'nosplit':
+        ratings_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + ratingsfile)
+        myMySQLIO.write(table='ratings', df=ratings_df, mode='overwrite')
+        return
     else:
-        trainlist, testlist1, testlist2 = random_split.random_split(datalist, 1 - 2 * testRetio, testRetio, testRetio)
+        datalist = PreProcessingUtils.ReadFile(ratingsfile)
+        if mode == 'debug':
+            # 用来调试模式的  划分 训练集，测试集，训练集
+            trainRatio = 0.001
+            test1Retio = 0.001
+            test2Retio = 0.001
+        elif mode == 'debug2':
+            trainRatio = 0.1
+            test1Retio = 0.1
+            test2Retio = 0.1
 
-    random_split.writefile(trainlist, trainfile, testlist1, testfile, testlist2, testfile2)
+    trainlist, test1list, test2list = PreProcessingUtils.RandomSplit(datalist, 1 - test1Retio - test2Retio, test1Retio,
+                                                                     test2Retio)
+    PreProcessingUtils.WriteFile(trainlist, trainfile, test1list, test1file, test2list, test2file)
 
-    ratings_df = data_processing_utils.get_ratings_df(spark, 'file://' + trainfile)
-    test1_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile)
-    test2_df = data_processing_utils.get_ratings_df(spark, 'file://' + testfile2)
+    print(trainfile)
+    train_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + trainfile)
+    test1_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test1file)
+    test2_df = PreProcessingUtils.ReadRatings_df(spark, 'file://' + test2file)
 
-    # if mode == 'debug':
-    #     # 用来调试模式的  划分 训练集，测试集，训练集
-    #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.001, 0.001, 0.998])
-    #     # write four table to MySQL
-    # elif mode == 'debug2':
-    #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.1, 0.001, 0.899])
-    #     # write four table to MySQL
-    # else:
-    #     [train_ratings_df, test_ratings_df, test2_ratings_df] = ratings_df.randomSplit([0.8, 0.1, 0.1])
-    #     # 划分 训练集，测试集，训练集
-
-    # write splited table to MySQL
-    myMySQLIO.write(df=ratings_df, table='ratings_df')
-    myMySQLIO.write(df=test1_df, table='test1_df')
-    myMySQLIO.write(df=test2_df, table='test2_df')
+    myMySQLIO.write(df=train_df, table='train')
+    myMySQLIO.write(df=test1_df, table='test1')
+    myMySQLIO.write(df=test2_df, table='test2')
 
 
 # def read_from_MySQL(spark: SparkSession, table: str, url: str, auth_mysql: dict):
@@ -2584,72 +2773,67 @@ def split_data(spark: SparkSession, myMySQLIO: MyMySQLIO, mode: str = 'debug2', 
 # # Evaluation(spark)
 
 
-if __name__ == '__main__':
-
+def Submit(args: sys.argv):
     usage = """
-        Usage: RealTimeUpdateItemCF.py <mode> <algorithm> <pathOfRecord> <tempFileSaveMode> <tempFilePath>
-                                        <MySQLPath> <MySQLDatabase> <MySQLUser> <MySQLPasswd> <N> [K] [interval] [kafkaMetadataBrokerList]
-        <> : must      []:optional
+            Usage: RealTimeUpdateItemCF.py <mode> <algorithm> <pathOfRecord> <tempFileSaveMode> <tempFilePath>
+                                            <MySQLPath> <MySQLDatabase> <MySQLUser> <MySQLPasswd> <N> [K] [interval] [kafkaMetadataBrokerList]
+            <> : must      []:optional
 
-        <mode> parameter :
-            normal : run normal algorithm
-            show : for just show result
-            evaluate : for evaluation algorithum
-
-
-        <algorithm>  parameter:
-            ItemCF : normal ItemCF
-            RealTimeUpdateItemCF : a spark streaming algorithum , need run after ItemCF
-            StreamingRecommend : just recommend , need run after ItemCF
-
-        <pathOfRecord> parameter :
-            if mode is ItemCF , is the table name  of userhistory in mysql
-            if mode is Recommend Only or RealTimeUpdateItemCF ,
-                is the path of Kafka 's metadata.broker.list  such as  :   host:port
-
-        <tempFileSaveMode> parameter:
-            redis : save in redis
-            parquet : save in parquet
+            <mode> parameter :
+                normal : run normal algorithm
+                show : for just show result
+                evaluate : for evaluation algorithum
 
 
-        <tempFIlePath> :
-            redis : host:port
-            parquet : path
+            <algorithm>  parameter:
+                ItemCF : normal ItemCF
+                RealTimeUpdateItemCF : a spark streaming algorithum , need run after ItemCF
+                StreamingRecommend : just recommend , need run after ItemCF
 
-        <MySQLPath>  parameter : your MySQL host:port
-        <MySQLDatabase> parameter : choose database to write
-        <MySQLUser> parameter : your MySQL user
-        <MySQLPasswd> parameter : your MySQL password
-        <N>  parameter : recommend list length
+            <pathOfRecord> parameter :
+                if mode is ItemCF , is the table name  of userhistory in mysql
+                if mode is Recommend Only or RealTimeUpdateItemCF ,
+                    is the path of Kafka 's metadata.broker.list  such as  :   host:port
 
-        [K] optional parameter : TopK 's K
-        [interval] optional parameter : interval of SparkStreaming interval
+            <tempFileSaveMode> parameter:
+                redis : save in redis
+                parquet : save in parquet
 
-        """
-    if len(sys.argv) < 12 or len(sys.argv) > 13:
+
+            <tempFIlePath> :
+                redis : host:port
+                parquet : path
+
+            <MySQLPath>  parameter : your MySQL host:port
+            <MySQLDatabase> parameter : choose database to write
+            <MySQLUser> parameter : your MySQL user
+            <MySQLPasswd> parameter : your MySQL password
+            <N>  parameter : recommend list length
+
+            [K] optional parameter : TopK 's K
+            [interval] optional parameter : interval of SparkStreaming interval
+
+            """
+    if len(args) < 12 or len(args) > 13:
         print(usage, file=sys.stderr)
 
-    mode = sys.argv[1]
-    algorithm = sys.argv[2]
-    pathOfRecord = sys.argv[3]
-    tempFIleSaveMode = sys.argv[4]
-    tempFilePath = sys.argv[5]
-    MySQLPath = sys.argv[6]
-    MySQLDatabase = sys.argv[7]
-    MySQLUser = sys.argv[8]
-    MySQLPasswd = sys.argv[9]
+    mode = args[1]
+    algorithm = args[2]
+    pathOfRecord = args[3]
+    tempFIleSaveMode = args[4]
+    tempFilePath = args[5]
+    MySQLPath = args[6]
+    MySQLDatabase = args[7]
+    MySQLUser = args[8]
+    MySQLPasswd = args[9]
     auth_mysql = {"user": MySQLUser, "password": MySQLPasswd}
 
-    N = int(sys.argv[10])
+    N = int(args[10])
 
-    if len(sys.argv) > 11:
-        K = int(sys.argv[11])
-        if len(sys.argv) >12:
-            interval = int(sys.argv[12])
-
-    for item in sys.argv:
-        print(item)
-
+    if len(args) > 11:
+        K = int(args[11])
+        if len(args) > 12:
+            interval = int(args[12])
 
     # select tempfile save mode
     # myMySQLIO: MyMySQLIO, tempFileIO
@@ -2663,18 +2847,20 @@ if __name__ == '__main__':
             .getOrCreate()
         tempFileIO = MyRedisIO(spark=spark)
     elif tempFIleSaveMode == 'parquet':
-        typestr = 'parquet'
         spark = SparkSession \
             .builder \
             .appName(mode + algorithm) \
             .config('spark.sql.crossJoin.enabled', 'true') \
             .getOrCreate()
-        tempFileIO = MyParquetIO(spark=spark,filepath=tempFilePath)
+
+        # .config('spark.executor.memory', '1600M') \
+        # .config('spark.driver.maxResultSize', '1500M') \
+    tempFileIO = MyParquetIO(spark=spark, filepath=tempFilePath)
 
     # MySQL url
     url = 'jdbc:mysql://' + MySQLPath + '/' + MySQLDatabase + '?useSSL=false'
     auth_mysql = {'user': MySQLUser, 'password': MySQLPasswd}
-    myMySQLIO = MyMySQLIO(spark=spark,url=url, auth_mysql=auth_mysql)
+    myMySQLIO = MyMySQLIO(spark=spark, url=url, auth_mysql=auth_mysql)
     # url = 'jdbc:mysql://Machine-zzh:3306/TencentRec?useSSL=false'
     # auth_mysql = {"user": "root", "password": "123456"}
 
@@ -2682,28 +2868,36 @@ if __name__ == '__main__':
     if mode == 'normal' or mode == 'show':
         # algorithm
         if algorithm == 'ItemCF':
-            algo = ItemCF(spark, K=K, N=N,recordPath=pathOfRecord)
+            algo = ItemCF(spark, K=K, N=N, recordPath=pathOfRecord)
         elif algorithm == 'RealTimeUpdateItemCF':
             algo = RealTimeUpdatItemCF(spark=spark, K=K, N=N, recordPath=pathOfRecord, interval=interval)
 
         elif algorithm == 'StreamingRecommend':
-            algo=StreamingRecommend(spark=spark,K=K,N=N,recordPath=pathOfRecord,interval=interval)
+            algo = StreamingRecommend(spark=spark, K=K, N=N, recordPath=pathOfRecord, interval=interval)
         else:
             print('please choose right parameter : <algorithm>')
             print(usage, file=sys.stderr)
 
-        if mode=='normal':
-            algo.calculate(myMySQLIO=myMySQLIO,tempFileIO=tempFileIO)
+        if mode == 'normal':
+            algo.calculate(myMySQLIO=myMySQLIO, tempFileIO=tempFileIO)
         else:
-            algo.show(myMySQLIO=myMySQLIO,tempFileIO=tempFileIO)
+            algo.show(myMySQLIO=myMySQLIO, tempFileIO=tempFileIO)
 
     elif mode == 'evaluate':
         klist = [5, 10, 15, 20, 30, 40, 50, 70, 100]
-        Evaluation.evaluate(spark=spark,myMySQLIO=myMySQLIO,tempFileIO=tempFileIO,klist=[5,10,15],N=N,testRatio=0.1,mode='None',M=10)
+        Evaluation.evaluate(spark=spark, myMySQLIO=myMySQLIO, tempFileIO=tempFileIO, klist=[5, 10, 15], N=N,
+                            testRatio=0.1, mode='None', M=10)
 
     else:
         print("please choose right parameter : <mode>")
         print(usage, file=sys.stderr)
+        return
+
+    spark.stop()
+
+
+if __name__ == '__main__':
+    Submit(sys.argv)
 
     # url = 'jdbc:mysql://Machine-zzh:3306/TencentRec?useSSL=false'
     # table = ''
@@ -2714,6 +2908,14 @@ if __name__ == '__main__':
     #     .config("spark.redis.port", "6379") \
     #     .config('spark.sql.crossJoin.enabled', 'true') \
     #     .getOrCreate()
+    # myMySQLIO = MyMySQLIO(spark, url, auth_mysql)
+    #
+    # modestr = 'nosplit'
+    # PreProcessingDataToFileAndMySQL(spark, myMySQLIO,
+    #                                 recordPath='/home/zzh/zzh/Program/Recommend_System/ml-latest-small/ratings.csv',
+    #                                 mode=modestr, test1Retio=0.05, test2Retio=0.05)
+    # spark.stop()
+
     # 为了支持笛卡尔积
     # spark.conf.set("spark.sql.crossJoin.enabled", "true")
     # .enableHiveSupport() \
@@ -2738,4 +2940,3 @@ if __name__ == '__main__':
     # print(df.count())
 
     # SparkContext
-    spark.stop()
